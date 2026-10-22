@@ -28,7 +28,10 @@ static carve_world K;
 static int e2e_chunks;
 static int surf_skipped, surf_states;
 static job *jobs;
-static int njobs, nthreads = 1, rounds = 3, use_vector;
+static int njobs, nthreads = 1, rounds = 3, use_vector, use_whole;
+/* whole mode: seconds per stage, summed over the threads: biomes, shape, surface, caves, ravines */
+static double stage_s[5];
+static pthread_mutex_t stage_m = PTHREAD_MUTEX_INITIALIZER;
 
 static unsigned short fpcw_get(void)
 {
@@ -102,6 +105,54 @@ static void *worker(void *arg)
     fpcw_set();
     double o0[25], o1[825], o2[825], o3[825], field[825];
     static __thread uint16_t blocks[65536];
+    if (use_whole) {
+        /* the whole chain as pwgd runs it, each stage timed (verification-side timing) */
+        static __thread uint8_t metas[65536];
+        gl_arena ar;
+        if (gl_arena_init(&ar, 1 << 18)) return NULL;
+        double sum[5] = { 0 };
+        for (int r = 0; r < rounds; r++)
+            for (int i = (int)t; i < njobs; i += nthreads) {
+                int cx = jobs[i].cx, cz = jobs[i].cz;
+                uint16_t s10[100], s16[256];
+                double a = now();
+                gl_slots10(&G, &ar, cx, cz, s10);
+                gl_slots16(&G, &ar, cx, cz, s16);
+                double b = now();
+                noise_octaves(&W.gen[0], o0, cx * 4, 10, cz * 4, 5, 1, 5, 200.0, 1.0, 200.0);
+#ifdef REPLAY_VPU
+                vshape_octaves3d(&W, cx, cz, o1, o2, o3);
+#else
+                shape_octaves(&W, cx, cz, o0, o1, o2, o3);
+#endif
+                shape_combine(&W, s10, o0, o1, o2, o3, field);
+                shape_interp(field, blocks);
+                double c = now();
+                memset(metas, 0, sizeof metas);
+                surf_state es[256];
+                int ne = surf_chunk(&S, cx, cz, s16, blocks, metas, es);
+                double d = now();
+                double e = d, f = d;
+                if (ne >= 0) {
+                    carve_cols cols;
+                    carve_columns(&S, s16, es, ne, &cols);
+                    carve_caves(&K, &cols, cx, cz, blocks);
+                    e = now();
+                    carve_ravines(&K, &cols, cx, cz, blocks);
+                    f = now();
+                }
+                sum[0] += b - a;
+                sum[1] += c - b;
+                sum[2] += d - c;
+                sum[3] += e - d;
+                sum[4] += f - e;
+            }
+        pthread_mutex_lock(&stage_m);
+        for (int k = 0; k < 5; k++) stage_s[k] += sum[k];
+        pthread_mutex_unlock(&stage_m);
+        gl_arena_free(&ar);
+        return NULL;
+    }
     for (int r = 0; r < rounds; r++)
         for (int i = (int)t; i < njobs; i += nthreads) {
 #ifdef REPLAY_VPU
@@ -122,7 +173,8 @@ int main(int argc, char **argv)
     if (argc < 2) { fprintf(stderr, "usage: replay DIR [THREADS [ROUNDS]]\n"); return 2; }
     if (argc > 2) nthreads = atoi(argv[2]);
     if (argc > 3) rounds = atoi(argv[3]);
-    if (argc > 4) use_vector = strcmp(argv[4], "vector") == 0;
+    if (argc > 4) use_vector = strcmp(argv[4], "vector") == 0 || strcmp(argv[4], "whole") == 0;
+    if (argc > 4) use_whole = strcmp(argv[4], "whole") == 0;
     unsigned short cw0 = fpcw_get();
     fpcw_set();
     printf("x87 control word: 0x%04x at start, 0x%04x after fldcw\n", cw0, fpcw_get());
@@ -136,6 +188,7 @@ int main(int argc, char **argv)
     if (gl_arena_init(&arena, 1 << 18)) return 1;
     if (surf_load(&S, &wf, path)) return 1;
     if (carve_load(&K, &wf, path)) return 1;
+    if (use_whole && !(G.have && S.have && K.have)) { fprintf(stderr, "whole: the capture lacks LAYR, SURB or CARV\n"); return 2; }
     printf("surface: %s\n", S.have ? "SURB, SNOI, BLKS present" : "no surface tables (the surface stage is skipped)");
     printf("layers: %s\n", G.have ? "LAYR present" : "no LAYR (the biome stages are skipped)");
     printf("world: octaves %d %d %d %d, amplified %d\n", W.gen[0].n, W.gen[1].n, W.gen[2].n, W.gen[3].n,
@@ -328,5 +381,10 @@ int main(int argc, char **argv)
     printf("timing (%s octaves): %d chunks x %d rounds on %d threads in %.3f s: %.1f chunks/s, %.3f ms a chunk a thread\n",
            use_vector ? "vector" : "scalar", njobs,
            rounds, nthreads, s, njobs * rounds / s, 1e3 * s * nthreads / (njobs * rounds));
+    if (use_whole) {
+        double per = 1e3 / (double)(njobs * rounds);
+        printf("whole chain, ms a chunk a thread: biomes %.3f, shape %.3f, surface %.3f, caves %.3f, ravines %.3f (verification-side timing)\n",
+               stage_s[0] * per, stage_s[1] * per, stage_s[2] * per, stage_s[3] * per, stage_s[4] * per);
+    }
     return all ? 1 : 0;
 }

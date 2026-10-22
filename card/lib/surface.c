@@ -120,6 +120,14 @@ static void perlin_fill(const perlin *g, double *out, double x, double z, int w,
 
 /* ---- genBiomeTerrain ---- */
 
+/* nextInt(5) whose value cannot matter (a height above 4 is never <= it): the state advances exactly as Java's does,
+ * redraw included. Java redraws when bits - bits % 5 + 4 overflows an int, which is exactly bits >= 2147483645. */
+static inline void skip_int5(jrand *r)
+{
+    while (jr_next(r, 31) >= 2147483645) {
+    }
+}
+
 typedef struct {
     uint16_t top, filler;
     uint8_t meta, top_air;
@@ -138,7 +146,7 @@ static void biome_terrain(const surf_world *s, const eff *b, jrand *r, uint16_t 
     int i1 = wx & 15, j1 = wz & 15;
     for (int l1 = 255; l1 >= 0; --l1) {
         int i2 = (j1 * 16 + i1) * 256 + l1; /* vanilla's index: x and z swapped against the shape's */
-        if (l1 <= 0 + jr_int(r, 5)) {
+        if (l1 >= 5 ? (skip_int5(r), 0) : l1 <= 0 + jr_int(r, 5)) {
             blocks[i2] = s->bedrock;
             continue;
         }

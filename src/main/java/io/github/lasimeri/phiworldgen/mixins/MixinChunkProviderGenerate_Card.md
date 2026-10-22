@@ -30,3 +30,14 @@ before (`func_147424_a`, then the biome redirect). In check mode vanilla makes
 everything and the card's whole chunk is compared with the returned `Chunk`
 (null and air-material blocks both read back as air, as `new Chunk` stores
 them) and its end states with the objects' fields.
+
+## The chunk without a block array
+
+When the four structure generators are `MapGenStructure`s (whose
+`func_151538_a` is final and never reads the block array; vanilla passes it
+null elsewhere), a whole answer is turned into the `Chunk` directly
+(`CardShape.buildChunk`): the card's runs go straight into each section's
+id and metadata arrays, with the non-air and random-tick counts that
+`func_150818_a` keeps. No 65,536-entry `Block[]` is made or walked. Check
+mode compares those sections with vanilla's, array for array and count for
+count (side server, new seed: 1,027 chunks, 0 differ).

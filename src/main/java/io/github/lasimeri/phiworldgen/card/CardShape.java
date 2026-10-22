@@ -201,6 +201,87 @@ public final class CardShape {
         }
     }
 
+    private static final byte[] TICKS = new byte[4096]; // 0 unknown, 1 no, 2 getTickRandomly
+
+    private static boolean ticks(int id) {
+        if (TICKS[id] == 0) {
+            Block b = Block.getBlockById(id);
+            TICKS[id] = (byte) (b != null && b.getTickRandomly() ? 2 : 1);
+        }
+        return TICKS[id] == 2;
+    }
+
+    /**
+     * new Chunk(world, blocks, metas, x, z) straight from a whole answer: the card's runs written into the sections'
+     * id and metadata arrays, with the counts func_150818_a would have kept, so no Block[] is made or walked.
+     */
+    public static net.minecraft.world.chunk.Chunk buildChunk(net.minecraft.world.World world, byte[] a, int x, int z) {
+        net.minecraft.world.chunk.Chunk ch = new net.minecraft.world.chunk.Chunk(world, x, z);
+        net.minecraft.world.chunk.storage.ExtendedBlockStorage[] st = ch.getBlockStorageArray();
+        boolean sky = !world.provider.hasNoSky;
+        int air = Block.getIdFromBlock(Blocks.air);
+        int[] count = new int[16], tick = new int[16];
+        int p = runsAt(a);
+        p += 2 + 8 * u16(a, p);
+        int c = 0, y = 0;
+        while (c < 256 && p + 4 <= a.length) {
+            int id = u16(a, p), m = a[p + 2] & 15, run = (a[p + 3] & 0xFF) + 1;
+            p += 4;
+            if (id == 0xFFFF || id == air) {
+                y += run;
+            } else {
+                int bx = c >> 4, bz = c & 15;
+                boolean t = ticks(id);
+                for (int k = 0; k < run; k++, y++) {
+                    int s = y >> 4;
+                    net.minecraft.world.chunk.storage.ExtendedBlockStorage e = st[s];
+                    if (e == null) st[s] = e = new net.minecraft.world.chunk.storage.ExtendedBlockStorage(s << 4, sky);
+                    int i = (y & 15) << 8 | bz << 4 | bx;
+                    e.getBlockLSBArray()[i] = (byte) id;
+                    if (id > 255) {
+                        if (e.getBlockMSBArray() == null) e.setBlockMSBArray(new net.minecraft.world.chunk.NibbleArray(4096, 4));
+                        e.getBlockMSBArray()
+                            .set(bx, y & 15, bz, (id & 3840) >> 8);
+                    }
+                    byte[] md = e.getMetadataArray().data;
+                    md[i >> 1] = (i & 1) == 0 ? (byte) (md[i >> 1] & 240 | m) : (byte) (md[i >> 1] & 15 | m << 4);
+                    count[s]++;
+                    if (t) tick[s]++;
+                }
+            }
+            if (y == 256) {
+                y = 0;
+                c++;
+            }
+        }
+        for (int s = 0; s < 16; s++) if (st[s] != null) {
+            ((io.github.lasimeri.phiworldgen.mixins.AccessorExtendedBlockStorage) st[s]).phiwg$setBlockRefCount(count[s]);
+            ((io.github.lasimeri.phiworldgen.mixins.AccessorExtendedBlockStorage) st[s]).phiwg$setTickRefCount(tick[s]);
+        }
+        return ch;
+    }
+
+    /** Check mode: buildChunk's sections against vanilla's, array for array and count for count. */
+    private static String compareSections(net.minecraft.world.chunk.Chunk mine, net.minecraft.world.chunk.Chunk made) {
+        net.minecraft.world.chunk.storage.ExtendedBlockStorage[] a = mine.getBlockStorageArray(),
+            b = made.getBlockStorageArray();
+        for (int s = 0; s < 16; s++) {
+            if ((a[s] == null) != (b[s] == null)) return "section " + s + " present in one only";
+            if (a[s] == null) continue;
+            if (!java.util.Arrays.equals(a[s].getBlockLSBArray(), b[s].getBlockLSBArray())) return "section " + s + " ids";
+            if (!java.util.Arrays.equals(a[s].getMetadataArray().data, b[s].getMetadataArray().data))
+                return "section " + s + " metadata";
+            if ((a[s].getBlockMSBArray() == null) != (b[s].getBlockMSBArray() == null)
+                || (a[s].getBlockMSBArray() != null && !java.util.Arrays.equals(a[s].getBlockMSBArray().data, b[s].getBlockMSBArray().data)))
+                return "section " + s + " high ids";
+            io.github.lasimeri.phiworldgen.mixins.AccessorExtendedBlockStorage x = (io.github.lasimeri.phiworldgen.mixins.AccessorExtendedBlockStorage) a[s],
+                y = (io.github.lasimeri.phiworldgen.mixins.AccessorExtendedBlockStorage) b[s];
+            if (x.phiwg$getBlockRefCount() != y.phiwg$getBlockRefCount() || x.phiwg$getTickRefCount() != y.phiwg$getTickRefCount())
+                return "section " + s + " counts";
+        }
+        return null;
+    }
+
     /** Check mode: the card's whole chunk against the chunk vanilla made, and its end states against the objects. */
     public static void compareWhole(int x, int z, byte[] a, net.minecraft.world.chunk.Chunk ch) {
         wholeChecked++;
@@ -221,7 +302,7 @@ public final class CardShape {
         for (int i = 0; i < 65536; i++) {
             int bx = i >> 12, bz = (i >> 8) & 15, by = i & 255;
             Block card = blocks[i];
-            boolean air = card == null || card.getMaterial() == net.minecraft.block.material.Material.air;
+            boolean air = card == null || card == Blocks.air; // what new Chunk(world, blocks, metas, x, z) skips
             Block made = ch.getBlock(bx, by, bz);
             boolean ok = air ? made == Blocks.air
                 : made == card && ch.getBlockMetadata(bx, by, bz) == (metas[i] & 15);
@@ -240,6 +321,9 @@ public final class CardShape {
                 return;
             }
         }
+        String why = compareSections(buildChunk(ch.worldObj, a, x, z), ch);
+        if (why != null && wholeMismatched++ < 10)
+            PhiWorldgen.LOG.warn("phiwg card check: chunk {},{}: the chunk built from the card differs: {}", x, z, why);
     }
 
     /** Column runs into the block array, as func_147424_a would have filled it: stone, water or null. */

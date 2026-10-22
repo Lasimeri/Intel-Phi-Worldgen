@@ -92,23 +92,28 @@ public abstract class MixinChunkProviderGenerate_Card {
         }
         // the whole chunk from the card; what stays here is vanilla's tail of provideChunk
         if (!GenProfile.isOpen(GenProfile.PROVIDE)) GenProfile.begin(GenProfile.PROVIDE);
-        Block[] blocks = new Block[65536];
-        byte[] metas = new byte[65536];
-        CardShape.decodeWhole(a, blocks, metas);
+        // MapGenStructure.func_151538_a is final and never reads the block array (vanilla passes null to it too):
+        // with four such generators the chunk is built from the card's runs and no Block[] is made
+        MapGenBase[] structures = { mineshaftGenerator, villageGenerator, strongholdGenerator,
+            scatteredFeatureGenerator };
+        boolean direct = true;
+        for (MapGenBase g : structures) direct &= g instanceof net.minecraft.world.gen.structure.MapGenStructure;
+        Block[] blocks = null;
+        byte[] metas = null;
+        if (!direct) {
+            blocks = new Block[65536];
+            metas = new byte[65536];
+            CardShape.decodeWhole(a, blocks, metas);
+        }
         biomesForGeneration = CardShape.biomes(a, biomesForGeneration);
         CardShape.applyStates(a);
         phiwg$answer = null;
         IChunkProvider self = (IChunkProvider) (Object) this;
         GenProfile.begin(GenProfile.STRUCTURES);
-        if (mapFeaturesEnabled) {
-            ((MapGenBase) mineshaftGenerator).func_151539_a(self, worldObj, x, z, blocks);
-            ((MapGenBase) villageGenerator).func_151539_a(self, worldObj, x, z, blocks);
-            ((MapGenBase) strongholdGenerator).func_151539_a(self, worldObj, x, z, blocks);
-            ((MapGenBase) scatteredFeatureGenerator).func_151539_a(self, worldObj, x, z, blocks);
-        }
+        if (mapFeaturesEnabled) for (MapGenBase g : structures) g.func_151539_a(self, worldObj, x, z, blocks);
         GenProfile.end(GenProfile.STRUCTURES);
         GenProfile.begin(GenProfile.CHUNK);
-        Chunk chunk = new Chunk(worldObj, blocks, metas, x, z);
+        Chunk chunk = direct ? CardShape.buildChunk(worldObj, a, x, z) : new Chunk(worldObj, blocks, metas, x, z);
         byte[] ids = chunk.getBiomeArray();
         for (int k = 0; k < ids.length; ++k) ids[k] = (byte) biomesForGeneration[k].biomeID;
         GenProfile.end(GenProfile.CHUNK);
