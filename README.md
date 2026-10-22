@@ -12,8 +12,8 @@ run on the card's 512-bit vector unit.
 | Biomes (both GenLayer chains, 10 x 10 and 16 x 16) | live, scalar | replay 283 chunks 0 differ; live check 1,070 chunks 0 differ |
 | Terrain shape: 3D noise octaves | live, **vector unit** | replay 7 captures 0 differ; about 1.15 M VPU instructions a chunk (hardware counter) |
 | Terrain shape: 2D octaves, combine, interpolation | live, scalar | live check 0 differ |
-| Surface (`replaceBlocksForBiome`) | ported, replay-gated, not live yet | replay 267 chunks 0 differ (Mesa not ported) |
-| Caves, ravines (`MapGenCaves`, `MapGenRavine`, Forge's `digBlock`) | ported, replay-gated, not live yet | replay 267 chunks 0 differ; whole chunks from coordinates 261 of 261 equal |
+| Surface (`replaceBlocksForBiome`) | ported, live-gated (protocol 3), not yet deployed on the play server | replay 267 chunks 0 differ (Mesa not ported); live check 1,029 whole chunks 0 differ |
+| Caves, ravines (`MapGenCaves`, `MapGenRavine`, Forge's `digBlock`) | ported, live-gated (protocol 3), not yet deployed | replay 267 chunks 0 differ; whole chunks from coordinates 261 of 261 equal; live check 1,029 whole chunks 0 differ |
 | Decorations (`populate`) | stay on the CPU | |
 
 The server asks ahead (a prefetch ring around each chunk it generates) and

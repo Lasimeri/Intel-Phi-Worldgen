@@ -48,6 +48,10 @@ public final class GenProfile {
         calls[phase]++;
     }
 
+    public static boolean isOpen(int phase) {
+        return open[phase];
+    }
+
     public static void endIfOpen(int phase) {
         end(phase);
     }

@@ -128,13 +128,13 @@ final class ShmLink implements CardClient.Link {
     }
 
     @Override
-    public boolean send(int cx, int cz, BiomeGenBase[] bi10, boolean urgent) {
+    public boolean send(int cx, int cz, BiomeGenBase[] bi10, boolean urgent, boolean whole) {
         if (posted - m.getLong(S_CONSUMED) >= S_REQ_N || posted - completed >= S_SLOT_N) return false;
         int e = S_REQ + (int) (posted % S_REQ_N) * S_REQ_SIZE;
         m.putInt(e, cx);
         m.putInt(e + 4, cz);
-        // flags: 1 urgent, 2 the card computes the biomes (bi10 null: the request's are zero)
-        m.putInt(e + 8, (urgent ? 1 : 0) | (bi10 == null ? 2 : 0));
+        // flags: 1 urgent, 2 the card computes the biomes (bi10 null: the request's are zero), 4 the whole chunk
+        m.putInt(e + 8, (urgent ? 1 : 0) | (bi10 == null ? 2 : 0) | (whole ? 4 : 0));
         for (int i = 0; i < 100; i++) m.putShort(e + 12 + 2 * i, bi10 == null ? 0 : (short) bi10[i].biomeID);
         posted++;
         if (urgent) flush();

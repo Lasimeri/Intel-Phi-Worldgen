@@ -1,5 +1,7 @@
 /* pwgcheck.c: drives a running pwgd with a capture and checks every block it returns. See pwgcheck.md.
- *   pwgcheck HOST PORT CAPTURE_DIR [ROUNDS] */
+ *   pwgcheck HOST PORT CAPTURE_DIR [ROUNDS [whole]]
+ * whole: coordinates only, and the whole chunk (surface, caves, ravines) from the card, checked against RAVN, META
+ * and SSTA; a chunk the card answers with its shape alone (Mesa) is checked against SHAP. */
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <netinet/in.h>
@@ -37,12 +39,15 @@ typedef struct {
     int cx, cz;
     uint16_t bi10[100];
     uint16_t *want;
+    uint16_t *ravn;
+    uint8_t *meta, *ssta;
 } chunk;
 
 int main(int argc, char **argv)
 {
     if (argc < 4) { fprintf(stderr, "usage: pwgcheck HOST PORT CAPTURE_DIR [ROUNDS]\n"); return 2; }
     int rounds = argc > 4 ? atoi(argv[4]) : 1;
+    int whole = argc > 5 && strcmp(argv[5], "whole") == 0;
     char path[4096];
     snprintf(path, sizeof path, "%s/world.bin", argv[3]);
     capfile wf;
@@ -65,6 +70,19 @@ int main(int argc, char **argv)
         for (int i = 0; i < 100; i++) cs[n].bi10[i] = rd16(bi + 2 * i);
         cs[n].want = malloc(131072);
         for (int i = 0; i < 65536; i++) cs[n].want[i] = rd16(sh + 2 * i);
+        cs[n].ravn = NULL;
+        if (whole) {
+            const uint8_t *rv = cap_need(&cf, path, "RAVN", 131072), *mt = cap_need(&cf, path, "META", 65536);
+            uint32_t ls;
+            const uint8_t *ss = cap_section(&cf, "SSTA", &ls);
+            cs[n].ravn = malloc(131072);
+            for (int i = 0; i < 65536; i++) cs[n].ravn[i] = rd16(rv + 2 * i);
+            cs[n].meta = malloc(65536);
+            memcpy(cs[n].meta, mt, 65536);
+            cs[n].ssta = malloc(ss ? ls : 4);
+            if (ss) memcpy(cs[n].ssta, ss, ls);
+            else memset(cs[n].ssta, 0, 4);
+        }
         n++;
         cap_free(&cf);
     }
@@ -77,7 +95,7 @@ int main(int argc, char **argv)
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof on);
     double t0 = now();
     uint8_t hdr[12];
-    uint32_t one = 2, len = (uint32_t)wf.size; /* protocol 2 (docs/shm-protocol.md) */
+    uint32_t one = 3, len = (uint32_t)wf.size; /* protocol 3 (docs/shm-protocol.md) */
     memcpy(hdr, "PWGH", 4);
     memcpy(hdr + 4, &one, 4);
     memcpy(hdr + 8, &len, 4);
@@ -102,15 +120,15 @@ int main(int argc, char **argv)
     printf("one urgent request: %.3f ms round trip, %.3f ms of it compute on the far side, %d bytes\n",
            1e3 * (now() - tl), rd32(rh + 12) / 1e3, rd32(rh + 8));
 
-    long bad = 0, total = 0, bytes = 0;
+    long bad = 0, total = 0, bytes = 0, wholes = 0;
     double tb = now();
     for (int r = 0; r < rounds; r++) {
         for (int i = 0; i < n; i++) {
             memcpy(q, &cs[i].cx, 4);
             memcpy(q + 4, &cs[i].cz, 4);
-            uint32_t zero = 0;
+            uint32_t zero = whole ? 2 | 4 : 0; /* the card's biomes, the whole chunk */
             memcpy(q + 8, &zero, 4);
-            for (int k = 0; k < 100; k++) memcpy(q + 12 + 2 * k, &cs[i].bi10[k], 2);
+            for (int k = 0; k < 100; k++) memcpy(q + 12 + 2 * k, whole ? (const void *)"\0\0" : (const void *)&cs[i].bi10[k], 2);
             write(fd, q, sizeof q);
         }
         for (int got = 0; got < n; got++) {
@@ -125,6 +143,34 @@ int main(int argc, char **argv)
             int c = 0, y = 0, ok = 1;
             /* the payload: u32 flags, the 16 x 16 biome slots (flag 1), then the runs; the biomes go with the requests here */
             uint32_t p0 = 4 + ((rd32(buf) & 1) ? 512 : 0);
+            if (rd32(buf) & 2) {
+                wholes++;
+                const uint8_t *qq = buf + p0;
+                int ns = rd16(qq), okw = 1, col = 0, yy = 0;
+                qq += 2;
+                for (int k = 0; k < ns; k++, qq += 8) {
+                    int found = 0;
+                    for (int m = 0; m < rd32(cs[i].ssta); m++) {
+                        const uint8_t *s = cs[i].ssta + 4 + 8 * m;
+                        if (rd16(s) != rd16(qq)) continue;
+                        found = 1;
+                        if (rd16(s + 2) != rd16(qq + 2) || rd16(s + 4) != rd16(qq + 4) || s[6] != qq[6]) okw = 0;
+                    }
+                    if (!found) okw = 0;
+                }
+                while (okw && col < 256 && qq + 4 <= buf + l) {
+                    for (int k = 0; k <= qq[3]; k++, yy++) {
+                        int at = (col << 8) | yy;
+                        if (cs[i].ravn[at] != rd16(qq) || cs[i].meta[at] != qq[2]) okw = 0;
+                    }
+                    qq += 4;
+                    if (yy == 256) { yy = 0; col++; }
+                }
+                if (col != 256) okw = 0;
+                if (!okw && bad++ == 0) printf("first whole-chunk difference: chunk %d,%d\n", cx, cz);
+                total++;
+                continue;
+            }
             for (uint32_t p = p0; p + 1 < l && c < 256; p += 2) {
                 uint16_t id = buf[p] == 1 ? BLOCK_STONE : buf[p] == 2 ? BLOCK_WATER : BLOCK_NULL;
                 for (int k = 0; k <= buf[p + 1]; k++, y++)
@@ -137,6 +183,7 @@ int main(int argc, char **argv)
         }
     }
     double s = now() - tb;
+    printf("%ld whole chunks\n", wholes);
     printf("%ld chunks in %.3f s: %.1f chunks/s, %.0f bytes a chunk, %ld differ from the capture\n", total, s,
            total / s, (double)bytes / (total ? total : 1), bad);
     close(fd);

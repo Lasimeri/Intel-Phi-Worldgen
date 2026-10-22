@@ -17,7 +17,7 @@ public final class CardClient {
     public interface Link {
 
         /** Queues one request; false when the link has no room now (the caller lets the CPU make the chunk). */
-        boolean send(int cx, int cz, BiomeGenBase[] bi10, boolean urgent) throws IOException;
+        boolean send(int cx, int cz, BiomeGenBase[] bi10, boolean urgent, boolean whole) throws IOException;
 
         /** Makes the queued requests visible to the card. */
         void flush() throws IOException;
@@ -40,10 +40,13 @@ public final class CardClient {
     private volatile boolean up = true;
     private Link link;
     /** docs/shm-protocol.md: requests and answers of version 2. */
-    public static final int PROTOCOL = 2;
+    public static final int PROTOCOL = 3;
     public final int workers;
     /** The world state holds the GenLayer chains (LAYR): the card computes every chunk's biomes from its coordinates. */
     public volatile boolean cardBiomes;
+    /** The card makes whole chunks (surface, caves, ravines): the tables are in the world state and no mod hooks
+     * ReplaceBiomeBlocks. */
+    public volatile boolean cardWhole;
     /** The generator whose state the card was given: the only one it may serve. */
     public final Object provider;
     public final AtomicLong answers = new AtomicLong(), bytes = new AtomicLong(), computeMicros = new AtomicLong();
@@ -77,6 +80,7 @@ public final class CardClient {
             try {
                 CardClient c = ShmLink.connect(shmFile, shmOffset, world, provider);
                 c.cardBiomes = Capture.hasSection(world, "LAYR");
+                c.cardWhole = wholeOk(world);
                 return c;
             } catch (IOException e) {
                 if (transport.equals("shm")) throw e;
@@ -85,9 +89,32 @@ public final class CardClient {
         }
         CardClient c = TcpLink.connect(host, port, world, provider);
         c.cardBiomes = Capture.hasSection(world, "LAYR");
+        c.cardWhole = wholeOk(world);
         if (shmFailure != null)
             PhiWorldgen.LOG.info("phiwg card: shared region not used ({}); TCP instead", shmFailure.getMessage());
         return c;
+    }
+
+    /** Whole chunks need the layer, surface and carver tables, and no ReplaceBiomeBlocks listener anywhere. */
+    static boolean wholeOk(byte[] world) {
+        return Capture.hasSection(world, "LAYR") && Capture.hasSection(world, "SURB") && Capture.hasSection(world, "SNOI")
+            && Capture.hasSection(world, "CARV") && !surfaceHooked();
+    }
+
+    /** Whether any handler listens to ChunkProviderEvent.ReplaceBiomeBlocks (or a parent event) on Forge's bus. */
+    static boolean surfaceHooked() {
+        try {
+            java.lang.reflect.Field f = cpw.mods.fml.common.eventhandler.EventBus.class.getDeclaredField("busID");
+            f.setAccessible(true);
+            int id = f.getInt(net.minecraftforge.common.MinecraftForge.EVENT_BUS);
+            net.minecraftforge.event.terraingen.ChunkProviderEvent.ReplaceBiomeBlocks e = new net.minecraftforge.event.terraingen.ChunkProviderEvent.ReplaceBiomeBlocks(
+                null, 0, 0, null, null, null, null);
+            for (cpw.mods.fml.common.eventhandler.IEventListener l : e.getListenerList()
+                .getListeners(id)) if (!(l instanceof cpw.mods.fml.common.eventhandler.EventPriority)) return true;
+            return false;
+        } catch (ReflectiveOperationException | RuntimeException ex) {
+            return true; // unknown: the surface stays on the server
+        }
     }
 
     /** Makes c, already linked, the client in use. */
@@ -136,7 +163,7 @@ public final class CardClient {
         Entry e = pending.get(k);
         if (e != null) return e;
         e = new Entry();
-        if (!link.send(cx, cz, bi10, urgent)) return null;
+        if (!link.send(cx, cz, bi10, urgent, cardWhole)) return null;
         pending.put(k, e);
         return e;
     }

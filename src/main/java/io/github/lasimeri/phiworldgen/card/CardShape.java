@@ -23,7 +23,7 @@ public final class CardShape {
     public static volatile long waitMs = 1;
 
     public static long ready, waited, waitNs, misses, late, prefetched, failures, checked, mismatched;
-    public static long biomesUsed, biomesChecked, biomesMismatched;
+    public static long biomesUsed, biomesChecked, biomesMismatched, wholeUsed, wholeChecked, wholeMismatched;
 
     private CardShape() {}
 
@@ -146,6 +146,102 @@ public final class CardShape {
         }
     }
 
+    /** Answer flag 2 (protocol 3): the whole chunk, surface, caves and ravines included. */
+    public static boolean isWhole(byte[] a) {
+        return (a[0] & 2) != 0;
+    }
+
+    private static int u16(byte[] a, int p) {
+        return (a[p] & 0xFF) | (a[p + 1] & 0xFF) << 8;
+    }
+
+    private static final Block[] BY_ID = new Block[4096];
+
+    private static Block block(int id) {
+        if (id == 0xFFFF) return null;
+        Block b = BY_ID[id];
+        if (b == null) BY_ID[id] = b = Block.getBlockById(id);
+        return b;
+    }
+
+    /** A whole answer into provideChunk's arrays: per column (x << 4 | z) from y 0, runs of (u16 id, u8 meta, u8 n-1). */
+    public static void decodeWhole(byte[] a, Block[] blocks, byte[] metas) {
+        int p = runsAt(a);
+        p += 2 + 8 * u16(a, p);
+        int c = 0, y = 0;
+        while (c < 256 && p + 4 <= a.length) {
+            Block b = block(u16(a, p));
+            byte m = a[p + 2];
+            int run = (a[p + 3] & 0xFF) + 1, base = c << 8;
+            for (int k = 0; k < run; k++, y++) {
+                blocks[base | y] = b;
+                metas[base | y] = m;
+            }
+            p += 4;
+            if (y == 256) {
+                y = 0;
+                c++;
+            }
+        }
+    }
+
+    /**
+     * The end state of the card's surface: the fields its overrides (Hills, Savanna M, mega Taiga) left on these
+     * biome objects, set on the server's, as vanilla's surface would have.
+     */
+    public static void applyStates(byte[] a) {
+        int p = runsAt(a), n = u16(a, p);
+        BiomeGenBase[] all = BiomeGenBase.getBiomeGenArray();
+        for (int i = 0, q = p + 2; i < n; i++, q += 8) {
+            BiomeGenBase g = all[u16(a, q)];
+            if (g == null) continue;
+            g.topBlock = block(u16(a, q + 2));
+            g.fillerBlock = block(u16(a, q + 4));
+            g.field_150604_aj = a[q + 6] & 0xFF;
+        }
+    }
+
+    /** Check mode: the card's whole chunk against the chunk vanilla made, and its end states against the objects. */
+    public static void compareWhole(int x, int z, byte[] a, net.minecraft.world.chunk.Chunk ch) {
+        wholeChecked++;
+        int p = runsAt(a), n = u16(a, p);
+        BiomeGenBase[] all = BiomeGenBase.getBiomeGenArray();
+        for (int i = 0, q = p + 2; i < n; i++, q += 8) {
+            BiomeGenBase g = all[u16(a, q)];
+            if (g != null && (g.topBlock != block(u16(a, q + 2)) || g.fillerBlock != block(u16(a, q + 4))
+                || (g.field_150604_aj & 255) != (a[q + 6] & 0xFF))) {
+                if (wholeMismatched++ < 10) PhiWorldgen.LOG
+                    .warn("phiwg card check: chunk {},{}: end state of biome slot {} differs", x, z, u16(a, q));
+                return;
+            }
+        }
+        Block[] blocks = new Block[65536];
+        byte[] metas = new byte[65536];
+        decodeWhole(a, blocks, metas);
+        for (int i = 0; i < 65536; i++) {
+            int bx = i >> 12, bz = (i >> 8) & 15, by = i & 255;
+            Block card = blocks[i];
+            boolean air = card == null || card.getMaterial() == net.minecraft.block.material.Material.air;
+            Block made = ch.getBlock(bx, by, bz);
+            boolean ok = air ? made == Blocks.air
+                : made == card && ch.getBlockMetadata(bx, by, bz) == (metas[i] & 15);
+            if (!ok) {
+                if (wholeMismatched++ < 10) PhiWorldgen.LOG.warn(
+                    "phiwg card check: chunk {},{} block x{} z{} y{}: card {}:{}, vanilla {}:{}",
+                    x,
+                    z,
+                    bx,
+                    bz,
+                    by,
+                    card,
+                    metas[i],
+                    made,
+                    ch.getBlockMetadata(bx, by, bz));
+                return;
+            }
+        }
+    }
+
     /** Column runs into the block array, as func_147424_a would have filled it: stone, water or null. */
     public static void decode(byte[] rle, Block[] blocks) {
         int c = 0, y = 0;
@@ -184,7 +280,7 @@ public final class CardShape {
     public static String status() {
         CardClient c = CardClient.get();
         return String.format(
-            "phiwg card: %s, %s%s; card shapes used %d (ready %d, waited for %d at %.3f ms average), CPU shapes %d (never asked %d, late %d), prefetched %d, failures %d; card biomes used %d; check %s: %d chunks, %d differ, biomes %d chunks, %d differ%s",
+            "phiwg card: %s, %s%s; card shapes used %d (ready %d, waited for %d at %.3f ms average), CPU shapes %d (never asked %d, late %d), prefetched %d, failures %d; card biomes used %d, whole chunks used %d; check %s: %d chunks, %d differ, biomes %d chunks, %d differ, whole chunks %d, %d differ%s",
             enabled ? "on" : "off",
             c == null ? "not connected"
                 : "connected through the " + c.linkName()
@@ -208,16 +304,19 @@ public final class CardShape {
             prefetched,
             failures,
             biomesUsed,
+            wholeUsed,
             check ? "on" : "off",
             checked,
             mismatched,
             biomesChecked,
             biomesMismatched,
+            wholeChecked,
+            wholeMismatched,
             "");
     }
 
     public static void resetStats() {
         ready = waited = waitNs = misses = late = prefetched = failures = checked = mismatched = 0;
-        biomesUsed = biomesChecked = biomesMismatched = 0;
+        biomesUsed = biomesChecked = biomesMismatched = wholeUsed = wholeChecked = wholeMismatched = 0;
     }
 }

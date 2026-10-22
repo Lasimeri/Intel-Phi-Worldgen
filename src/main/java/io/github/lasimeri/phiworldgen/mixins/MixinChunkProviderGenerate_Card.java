@@ -5,8 +5,12 @@ import net.minecraft.world.World;
 import net.minecraft.world.WorldServer;
 import net.minecraft.world.biome.BiomeGenBase;
 import net.minecraft.world.biome.WorldChunkManager;
+import net.minecraft.world.chunk.Chunk;
+import net.minecraft.world.chunk.IChunkProvider;
 import net.minecraft.world.gen.ChunkProviderGenerate;
+import net.minecraft.world.gen.MapGenBase;
 
+import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
@@ -14,6 +18,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import io.github.lasimeri.phiworldgen.capture.Capture;
 import io.github.lasimeri.phiworldgen.card.CardClient;
@@ -21,8 +26,8 @@ import io.github.lasimeri.phiworldgen.card.CardShape;
 import io.github.lasimeri.phiworldgen.profile.GenProfile;
 
 /**
- * The terrain shape and the 16 x 16 biomes from the card when its answer is in, vanilla's otherwise. See
- * MixinChunkProviderGenerate_Card.md.
+ * The card's chunk when its answer is in: the whole chunk (biomes, shape, surface, caves, ravines), or the shape
+ * and the 16 x 16 biomes; vanilla's otherwise. See MixinChunkProviderGenerate_Card.md.
  */
 @Mixin(ChunkProviderGenerate.class)
 public abstract class MixinChunkProviderGenerate_Card {
@@ -33,34 +38,105 @@ public abstract class MixinChunkProviderGenerate_Card {
     @Shadow
     private World worldObj;
 
+    @Shadow
+    private BiomeGenBase[] biomesForGeneration;
+
+    @Shadow
+    @Final
+    private boolean mapFeaturesEnabled;
+
+    @Shadow
+    private net.minecraft.world.gen.structure.MapGenStronghold strongholdGenerator;
+
+    @Shadow
+    private net.minecraft.world.gen.structure.MapGenVillage villageGenerator;
+
+    @Shadow
+    private net.minecraft.world.gen.structure.MapGenMineshaft mineshaftGenerator;
+
+    @Shadow
+    private net.minecraft.world.gen.structure.MapGenScatteredFeature scatteredFeatureGenerator;
+
     @Unique
     private byte[] phiwg$checkRle;
 
-    /** The card's answer for the chunk being provided (phiwg$ax, phiwg$az), for its biomes after the shape. */
+    /** The card's answer for the chunk being provided (phiwg$ax, phiwg$az): its shape and biomes, later in it. */
     @Unique
     private byte[] phiwg$answer;
+
+    /** Check mode: a whole answer, compared with the chunk vanilla returns. */
+    @Unique
+    private byte[] phiwg$wholeCheck;
 
     @Unique
     private int phiwg$ax, phiwg$az;
 
-    @Inject(method = "func_147424_a", at = @At("HEAD"), cancellable = true)
-    private void phiwg$cardShape(int x, int z, Block[] blocks, CallbackInfo ci) {
+    @Inject(method = "provideChunk", at = @At("HEAD"), cancellable = true)
+    private void phiwg$cardChunk(int x, int z, CallbackInfoReturnable<Chunk> cir) {
         phiwg$answer = null;
+        phiwg$wholeCheck = null;
         if (!CardShape.enabled || Capture.on() || !(worldObj instanceof WorldServer)) return;
         CardClient c = CardClient.get();
         if (c == null || c.provider != (Object) this) return; // the card holds this generator's state only
         GenProfile.begin(GenProfile.CARD);
-        byte[] rle = CardShape.fetch((WorldServer) worldObj, x, z);
+        byte[] a = CardShape.fetch((WorldServer) worldObj, x, z);
         GenProfile.end(GenProfile.CARD);
-        if (rle == null) return; // vanilla runs on: its biomes, then the shape, on the CPU
-        phiwg$answer = rle;
+        if (a == null) return; // vanilla runs on: its biomes, then the shape, on the CPU
+        phiwg$answer = a;
         phiwg$ax = x;
         phiwg$az = z;
+        if (!CardShape.isWhole(a)) return; // the shape and biomes are taken further in
         if (CardShape.check) {
-            phiwg$checkRle = rle; // vanilla runs on; compared at the return
+            phiwg$wholeCheck = a; // vanilla makes the chunk; compared at the return
             return;
         }
-        CardShape.decode(rle, blocks);
+        // the whole chunk from the card; what stays here is vanilla's tail of provideChunk
+        if (!GenProfile.isOpen(GenProfile.PROVIDE)) GenProfile.begin(GenProfile.PROVIDE);
+        Block[] blocks = new Block[65536];
+        byte[] metas = new byte[65536];
+        CardShape.decodeWhole(a, blocks, metas);
+        biomesForGeneration = CardShape.biomes(a, biomesForGeneration);
+        CardShape.applyStates(a);
+        phiwg$answer = null;
+        IChunkProvider self = (IChunkProvider) (Object) this;
+        GenProfile.begin(GenProfile.STRUCTURES);
+        if (mapFeaturesEnabled) {
+            ((MapGenBase) mineshaftGenerator).func_151539_a(self, worldObj, x, z, blocks);
+            ((MapGenBase) villageGenerator).func_151539_a(self, worldObj, x, z, blocks);
+            ((MapGenBase) strongholdGenerator).func_151539_a(self, worldObj, x, z, blocks);
+            ((MapGenBase) scatteredFeatureGenerator).func_151539_a(self, worldObj, x, z, blocks);
+        }
+        GenProfile.end(GenProfile.STRUCTURES);
+        GenProfile.begin(GenProfile.CHUNK);
+        Chunk chunk = new Chunk(worldObj, blocks, metas, x, z);
+        byte[] ids = chunk.getBiomeArray();
+        for (int k = 0; k < ids.length; ++k) ids[k] = (byte) biomesForGeneration[k].biomeID;
+        GenProfile.end(GenProfile.CHUNK);
+        GenProfile.begin(GenProfile.SKYLIGHT);
+        chunk.generateSkylightMap();
+        GenProfile.end(GenProfile.SKYLIGHT);
+        CardShape.wholeUsed++;
+        GenProfile.end(GenProfile.PROVIDE); // the profiler's RETURN injection does not run on a cancel
+        cir.setReturnValue(chunk);
+    }
+
+    @Inject(method = "provideChunk", at = @At("RETURN"))
+    private void phiwg$cardWholeCheck(int x, int z, CallbackInfoReturnable<Chunk> cir) {
+        byte[] a = phiwg$wholeCheck;
+        if (a == null) return;
+        phiwg$wholeCheck = null;
+        CardShape.compareWhole(x, z, a, cir.getReturnValue());
+    }
+
+    @Inject(method = "func_147424_a", at = @At("HEAD"), cancellable = true)
+    private void phiwg$cardShape(int x, int z, Block[] blocks, CallbackInfo ci) {
+        byte[] a = phiwg$answer;
+        if (a == null || x != phiwg$ax || z != phiwg$az || CardShape.isWhole(a)) return;
+        if (CardShape.check) {
+            phiwg$checkRle = a; // vanilla runs on; compared at the return
+            return;
+        }
+        CardShape.decode(a, blocks);
         GenProfile.endIfOpen(GenProfile.SHAPE);
         ci.cancel();
     }

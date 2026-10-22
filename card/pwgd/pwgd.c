@@ -21,21 +21,27 @@
 
 #include "capfile.h"
 #include "cdma.h"
+#include "carve.h"
 #include "genlayer.h"
 #include "shape.h"
 #include "vshape.h"
 
 enum { REQ_BYTES = 212, QCAP = 1 << 16, HDR_BYTES = 16, VIA_TCP = 0, VIA_SHM = 1 };
-enum { PROTOCOL = 2 };
-/* request flags: 1 urgent, 2 the card computes the 10 x 10 biomes (the request's are zero) */
-enum { RQ_URGENT = 1, RQ_CARD_BIOMES = 2 };
-/* answer flags, the payload's first u32: 1 the 16 x 16 biome slots follow (u16[256]), before the column runs */
-enum { AN_BI16 = 1 };
+enum { PROTOCOL = 3 };
+/* request flags: 1 urgent, 2 the card computes the 10 x 10 biomes (the request's are zero), 4 the server takes the
+ * whole chunk (surface, caves and ravines on the card) */
+enum { RQ_URGENT = 1, RQ_CARD_BIOMES = 2, RQ_WHOLE = 4 };
+/* answer flags, the payload's first u32: 1 the 16 x 16 biome slots follow (u16[256]); 2 the whole chunk: then u16 n, n
+ * end states (u16 slot, u16 top, u16 filler, u8 meta, u8 0), and per column (x << 4 | z) from y 0 runs of u16 id,
+ * u8 meta, u8 length - 1; without 2, the shape's column runs (lib/shape.h) */
+enum { AN_BI16 = 1, AN_WHOLE = 2 };
 
 /* One world state: the shape generators, and the GenLayer chains when the capture has them. */
 typedef struct {
     world w;
     gl_world g;
+    surf_world s;
+    carve_world k;
 } wstate;
 
 /* docs/shm-protocol.md */
@@ -71,7 +77,7 @@ static pthread_cond_t qc = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t wm = PTHREAD_MUTEX_INITIALIZER; /* the TCP connection and its writes */
 static int conn = -1;
 static volatile unsigned tcp_gen, shm_gen;
-static long served_tcp, served_shm, computed_us;
+static long served_tcp, served_shm, served_whole, computed_us;
 static int nworkers = 120;
 
 typedef struct {
@@ -201,11 +207,48 @@ static void shm_deliver(stage_t *st, const req *r, uint32_t len, uint32_t us)
     __atomic_add_fetch(&served_shm, 1, __ATOMIC_RELAXED);
 }
 
+/* The whole chunk after the header's flags and biomes (at off): the end states, then every column's runs of (id, meta)
+ * from y 0. Returns the payload's length, or 0 when it would pass max (the caller sends the shape instead). */
+static uint32_t whole_encode(const uint16_t *blocks, const uint8_t *metas, const surf_state *es, int ne, uint8_t *pay,
+                             uint32_t off, uint32_t max)
+{
+    uint8_t *p = pay + off, *end = pay + max;
+    if (p + 2 + 8 * ne > end) return 0;
+    uint16_t n = (uint16_t)ne;
+    memcpy(p, &n, 2);
+    p += 2;
+    for (int i = 0; i < ne; i++) {
+        uint16_t slot = es[i].slot;
+        memcpy(p, &slot, 2);
+        memcpy(p + 2, &es[i].top, 2);
+        memcpy(p + 4, &es[i].filler, 2);
+        p[6] = es[i].meta;
+        p[7] = 0;
+        p += 8;
+    }
+    for (int c = 0; c < 256; c++) {
+        const uint16_t *col = blocks + (c << 8);
+        const uint8_t *mc = metas + (c << 8);
+        for (int y = 0; y < 256;) {
+            int y0 = y;
+            while (y < 256 && y - y0 < 256 && col[y] == col[y0] && mc[y] == mc[y0]) y++;
+            if (p + 4 > end) return 0;
+            memcpy(p, &col[y0], 2);
+            p[2] = mc[y0];
+            p[3] = (uint8_t)(y - y0 - 1);
+            p += 4;
+        }
+    }
+    return (uint32_t)(p - pay);
+}
+
 static void *worker(void *arg)
 {
     stage_t *st = &stage[(long)arg];
     fpcw_set();
     static __thread uint16_t blocks[65536];
+    static __thread uint16_t shape[65536];
+    static __thread uint8_t metas[65536];
     gl_arena arena;
     if (gl_arena_init(&arena, 1 << 18)) {
         say("worker %ld: no memory for the layer arena", (long)arg);
@@ -226,13 +269,13 @@ static void *worker(void *arg)
         /* the payload after the 64-byte header: flags, the 16 x 16 biome slots when the layers are here, the runs */
         uint8_t *pay = st->virt + 64;
         uint32_t aflags = 0, off = 4;
+        uint16_t b16[256];
         if (g->have) {
             if (r.flags & RQ_CARD_BIOMES) {
                 gl_slots10(g, &arena, r.cx, r.cz, r.bi10);
                 for (int i = 0; i < 100; i++)
                     if (r.bi10[i] == 0xFFFF) r.bi10[i] = 0; /* a null biome: Java would throw; never seen */
             }
-            uint16_t b16[256];
             gl_slots16(g, &arena, r.cx, r.cz, b16);
             memcpy(pay + off, b16, sizeof b16);
             off += sizeof b16;
@@ -247,7 +290,28 @@ static void *worker(void *arg)
             shape_combine(w, r.bi10, o0, o1, o2, o3, field);
             shape_interp(field, blocks);
         }
-        uint32_t len = off + (uint32_t)shape_rle(blocks, pay + off);
+        uint32_t len = 0;
+        if ((r.flags & RQ_WHOLE) && g->have && r.ws->s.have && r.ws->k.have) {
+            /* the surface, then the carvers on its end states; the shape kept for the fallback */
+            memcpy(shape, blocks, sizeof shape);
+            memset(metas, 0, sizeof metas);
+            surf_state es[256];
+            int ne = surf_chunk(&r.ws->s, r.cx, r.cz, b16, blocks, metas, es);
+            if (ne >= 0) {
+                carve_cols cols;
+                carve_columns(&r.ws->s, b16, es, ne, &cols);
+                carve_caves(&r.ws->k, &cols, r.cx, r.cz, blocks);
+                carve_ravines(&r.ws->k, &cols, r.cx, r.cz, blocks);
+                len = whole_encode(blocks, metas, es, ne, pay, off, S_SLOT_SIZE - 64);
+                if (len) {
+                    aflags |= AN_WHOLE;
+                    memcpy(pay, &aflags, 4);
+                    __atomic_add_fetch(&served_whole, 1, __ATOMIC_RELAXED);
+                }
+            }
+            if (!len) memcpy(blocks, shape, sizeof shape); /* Mesa or too long: the shape alone */
+        }
+        if (!len) len = off + (uint32_t)shape_rle(blocks, pay + off);
         uint32_t us = (uint32_t)((now() - t0) * 1e6);
         __atomic_add_fetch(&computed_us, us, __ATOMIC_RELAXED);
 
@@ -273,7 +337,7 @@ static wstate *load_world(uint8_t *blob, size_t len)
     capfile f;
     wstate *w = calloc(1, sizeof *w);
     if (!w || cap_wrap(&f, blob, len, "PWGW") || world_load(&w->w, &f, "world state") ||
-        gl_load(&w->g, &f, "world state"))
+        gl_load(&w->g, &f, "world state") || surf_load(&w->s, &f, "world state") || carve_load(&w->k, &f, "world state"))
         return NULL;
     return w; /* never freed: a worker may still hold the pointer from a request of an earlier session */
 }

@@ -21,7 +21,7 @@ All values are little-endian. Offsets are from the part's start:
 | Offset | Size | Written by | What |
 | --- | --- | --- | --- |
 | 0 | 4 | host | magic `PWGS` |
-| 4 | 4 | host | version, 2 |
+| 4 | 4 | host | version, 3 |
 | 8 | 8 | host | session: raised for each new world state |
 | 16 | 4 | host | the world state's length |
 | 64 | 8 | host | posted: requests written so far this session |
@@ -31,9 +31,9 @@ All values are little-endian. Offsets are from the part's start:
 | 256 | 8 | card | consumed: requests the card has taken from the ring |
 | 320 | 8 | card | heartbeat, counted up about every 100 ms |
 | 64 KiB | up to 1,966,080 | host | the world state (`world.bin`, `docs/capture-format.md`) |
-| 2 MiB | 4096 x 256 | host | the request ring: entry n % 4096 holds request n: `i32` x, `i32` z, `u32` flags (bit 0 urgent, bit 1 the card computes the biomes), `u16[100]` the 10 x 10 biome ids (zero with bit 1) |
+| 2 MiB | 4096 x 256 | host | the request ring: entry n % 4096 holds request n: `i32` x, `i32` z, `u32` flags (bit 0 urgent, bit 1 the card computes the biomes, bit 2 the server takes the whole chunk), `u16[100]` the 10 x 10 biome ids (zero with bit 1) |
 | 3 MiB | 2048 x 64 | card's DMA engine | the completion ring: entry n % 2048 holds `u64` n + 1 once answer n is in its slot |
-| 4 MiB | 2048 x 135,168 | card's DMA engine | the answer slots: slot n % 2048 holds a 64-byte header (`i32` x, `i32` z, `u32` length, `u32` compute microseconds, `u64` n + 1) and the payload: `u32` flags (bit 0: the 16 x 16 biomes follow), `u16[256]` the 16 x 16 biome slots (`getBiomeGenArray` indexes), then the column runs (`card/lib/shape.h`) |
+| 4 MiB | 2048 x 135,168 | card's DMA engine | the answer slots: slot n % 2048 holds a 64-byte header (`i32` x, `i32` z, `u32` length, `u32` compute microseconds, `u64` n + 1) and the payload: `u32` flags (bit 0: the 16 x 16 biomes follow; bit 1: the whole chunk), `u16[256]` the 16 x 16 biome slots (`getBiomeGenArray` indexes), then either the whole chunk (below) or the shape's column runs (`card/lib/shape.h`) |
 
 ## A session
 
@@ -86,3 +86,22 @@ answer then also carries the chunk's 16 x 16 biome slots, which the mod
 hands to `provideChunk` in place of `loadBlockGeneratorData`. The TCP link
 carries the same requests and payloads, with version 2 in its hello.
 Version 1 peers are refused.
+
+## Version 3 (2026-10-22)
+
+Version 3 lets the card make the whole chunk: biomes, shape, surface, caves
+and ravines (`card/lib/surface.c`, `card/lib/carve.c`). The mod asks for it
+(request flag bit 2) when the world state holds `LAYR`, `SURB`, `SNOI` and
+`CARV` and no mod listens to Forge's `ReplaceBiomeBlocks`. A whole answer
+(payload flag bit 1) carries, after the biome slots:
+
+- `u16` n, then n end states of 8 bytes (`u16` biome slot, `u16` top block,
+  `u16` filler block, `u8` top metadata, `u8` 0): the fields the surface
+  overrides (Hills, Savanna M, mega Taiga) left on those biome objects, which
+  the mod sets on its own;
+- per column, `x << 4 | z`, from y 0: runs of `u16` block id (0xFFFF null),
+  `u8` metadata, `u8` length - 1.
+
+A chunk with a biome whose surface is not ported (Mesa), or whose runs would
+pass the slot, is answered with its shape alone, and the server makes the
+rest. Measured over captures c1, c2, c3: 7,008 to 7,532 bytes a whole chunk.

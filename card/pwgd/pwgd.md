@@ -51,3 +51,18 @@ completion entry n % 2048 in host memory.
 
 Live over the shared region: 1,061 chunks compared with vanilla in check
 mode, 0 differ.
+
+## Whole chunks (protocol 3, 2026-10-22)
+
+With request flag 4, a worker runs the surface and both carvers after the
+shape (`lib/surface.c`, `lib/carve.c`) and answers with the whole chunk
+(`docs/shm-protocol.md`, version 3); a Mesa chunk or one whose runs would
+pass the slot gets its shape alone. The build writes `out/pwgd-card-new`;
+`out/pwgd-card` is the deployed binary, which `keeper.sh` puts back on a card
+that lost pwgd, so a build never changes what the keeper deploys.
+
+Verified: `pwgcheck ... whole` over TCP against captures c1, c2, c3 (whole
+chunks 176, 168, 178 and 12 shapes, 0 differ); live check mode on a side
+server (new seed): 1,029 whole chunks, 0 differ. Card compute rose to
+18.39 ms a chunk: the caves re-walk all 289 source chunks for every target,
+scalar.

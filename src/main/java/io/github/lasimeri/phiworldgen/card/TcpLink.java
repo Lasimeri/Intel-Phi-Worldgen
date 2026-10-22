@@ -60,12 +60,12 @@ final class TcpLink implements CardClient.Link {
     }
 
     @Override
-    public boolean send(int cx, int cz, BiomeGenBase[] bi10, boolean urgent) throws IOException {
+    public boolean send(int cx, int cz, BiomeGenBase[] bi10, boolean urgent, boolean whole) throws IOException {
         ByteBuffer q = ByteBuffer.allocate(212)
             .order(ByteOrder.LITTLE_ENDIAN);
         q.putInt(cx)
             .putInt(cz)
-            .putInt((urgent ? 1 : 0) | (bi10 == null ? 2 : 0));
+            .putInt((urgent ? 1 : 0) | (bi10 == null ? 2 : 0) | (whole ? 4 : 0));
         for (int i = 0; i < 100; i++) q.putShort(bi10 == null ? 0 : (short) bi10[i].biomeID);
         synchronized (out) {
             out.write(q.array());
