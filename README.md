@@ -46,3 +46,28 @@ The mod: JDK 25, `./gradlew build` (`runServer` for the JDK 8 dev server).
 The card side needs the Intel Phi 7120A stack (`knc-cc`, `phictl`) and the
 Intel-Phi-LLVM S3 clang for the vector kernels: `card/pwgd/build.sh`,
 `card/replay/build.sh`.
+
+## Running it
+
+**The dev server (how it runs here).** `./gradlew runServer` compiles the
+source, builds a development jar (`build/libs/phiworldgen-<commit>-dev.jar`)
+and starts Forge 1.7.10 with it loaded. Nothing goes into the server's `mods/`
+folder, and nothing is downloaded from this repository: GitHub holds the
+source only (`build/` is not in git). The server's log lists the mod as
+loaded: `LoadedMods [... phiworldgen ...]`.
+
+**A regular Forge 1.7.10 server.** `./gradlew build` makes the release jar
+in `build/libs/` (not yet built and tested as a standalone install). Put it
+in the server's `mods/` folder together with a Mixin loader such as
+UniMixins: Forge 1.7.10 has no Mixin of its own (the dev run gets one through
+the template's dependencies).
+
+**The card side** runs apart from any jar: `pwgd` on the Xeon Phi, started and
+kept running by `card/pwgd/keeper.sh`, and phictl's shared host-memory region
+(`/dev/shm/phi-hostmem`), which the mod maps. Without the card the mod falls
+back to vanilla generation on the CPU, chunk by chunk.
+
+**Clients** need nothing: the mod is server-side only. A plain Forge 1.7.10
+client with an empty `mods/` folder joins and plays; the client never
+generates terrain in multiplayer (its chunk provider only fills chunks from
+the server's packets).
