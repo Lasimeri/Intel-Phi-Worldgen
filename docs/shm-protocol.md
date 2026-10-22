@@ -105,3 +105,30 @@ and ravines (`card/lib/surface.c`, `card/lib/carve.c`). The mod asks for it
 A chunk with a biome whose surface is not ported (Mesa), or whose runs would
 pass the slot, is answered with its shape alone, and the server makes the
 rest. Measured over captures c1, c2, c3: 7,008 to 7,532 bytes a whole chunk.
+
+## pwgd's stats block (2026-10-22)
+
+pwgd writes, with every heartbeat (about every 100 ms), 128 bytes at offset
+384 of its part, which phitop (Intel Phi 7120A tree, `host/asm/phitop`) shows
+as its `pwgd` line:
+
+| Offset | What |
+| --- | --- |
+| 384 | `u64` answers since pwgd started |
+| 392 | `u64` DMA errors |
+| 400 | `u64` the mean worker's busy nanoseconds (compute over workers) |
+| 408 | `u64` compute nanoseconds, all workers |
+| 416 | `u64` 0 |
+| 424 | `u64` DMA nanoseconds of the answers |
+| 432 | `u32` 0, `u32` workers |
+| 440 | `u64` the heartbeat count |
+| 448 | `u32` magic `PWGD`, `u32` version 1 |
+| 456 | `u64` VPU instructions (VPU_INSTRUCTIONS_EXECUTED, user mode) |
+| 464 | `u64` whole answers |
+| 472 | `u64` shape-only answers |
+
+The first 64 bytes follow the AVX-512 wrapper worker's `struct vpu_stats`.
+Each worker counts its own VPU instructions (KNC event 0x2016 on itself) and
+adds them after every chunk. Only one such event counts on a 7120A thread, so
+nothing else may count pwgd's threads while it runs (`card/tools/vpucount`
+is for other programs; the benchmark reads offset 456 instead).

@@ -66,3 +66,12 @@ chunks 176, 168, 178 and 12 shapes, 0 differ); live check mode on a side
 server (new seed): 1,029 whole chunks, 0 differ. Card compute rose to
 18.39 ms a chunk: the caves re-walk all 289 source chunks for every target,
 scalar.
+
+## Stats for phitop (2026-10-22)
+
+Every worker opens a VPU_INSTRUCTIONS_EXECUTED counter on itself and adds
+its delta after each chunk; the dispatcher writes the totals, the answers,
+compute and DMA time into the stats block of `docs/shm-protocol.md` with
+every heartbeat. phitop's `pwgd` line reads it: during a 1,089-chunk pregen
+the busiest frame showed 1163.2 chunks/s, workers busy 15.8 %, compute
+16.363 ms a chunk, 1336.3 M VPU instructions/s, 1.15 M a chunk.

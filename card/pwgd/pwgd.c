@@ -5,6 +5,7 @@
  * channel 6; -s 0 turns the shared region off. */
 #include <arpa/inet.h>
 #include <errno.h>
+#include <linux/perf_event.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -16,6 +17,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -78,6 +80,12 @@ static pthread_mutex_t wm = PTHREAD_MUTEX_INITIALIZER; /* the TCP connection and
 static int conn = -1;
 static volatile unsigned tcp_gen, shm_gen;
 static long served_tcp, served_shm, served_whole, computed_us;
+/* pwgd's stats block in its part (docs/shm-protocol.md, offset 384), which phitop shows as the pwgd vpu line:
+ * monotonic since pwgd started. VPU instructions are counted by each worker on itself (KNC event 0x2016,
+ * VPU_INSTRUCTIONS_EXECUTED, user mode; only one event counts per thread on the 7120A, so nothing else may
+ * count pwgd's threads while it runs). */
+static uint64_t st_answers, st_errors, st_compute_ns, st_push_ns, st_vpu, st_whole, st_shape;
+enum { S_STATS = 384, S_STATS_EXT = 448 };
 static int nworkers = 120;
 
 typedef struct {
@@ -200,7 +208,11 @@ static void shm_deliver(stage_t *st, const req *r, uint32_t len, uint32_t us)
     uint32_t bytes = (64 + len + 63) / 64 * 64;
     uint64_t seq = cdma_submit(&D, st->phys, part_card + S_SLOTS + (a % S_SLOT_N) * S_SLOT_SIZE, bytes,
                                part_card + S_COMPL + (a % S_SLOT_N) * 64, tag);
-    if (!seq || cdma_wait(&D, seq, 2.0)) {
+    double tp = now();
+    int failed = !seq || cdma_wait(&D, seq, 2.0);
+    __atomic_add_fetch(&st_push_ns, (uint64_t)((now() - tp) * 1e9), __ATOMIC_RELAXED);
+    if (failed) {
+        __atomic_add_fetch(&st_errors, 1, __ATOMIC_RELAXED);
         say("DMA answer %llu for chunk %d,%d did not complete", (unsigned long long)a, r->cx, r->cz);
         return;
     }
@@ -249,6 +261,16 @@ static void *worker(void *arg)
     static __thread uint16_t blocks[65536];
     static __thread uint16_t shape[65536];
     static __thread uint8_t metas[65536];
+    /* this worker's own VPU instruction counter (user mode); -1 when the kernel has none */
+    struct perf_event_attr pa;
+    memset(&pa, 0, sizeof pa);
+    pa.size = sizeof pa;
+    pa.type = PERF_TYPE_RAW;
+    pa.config = 0x2016;
+    pa.exclude_kernel = 1;
+    pa.exclude_hv = 1;
+    int vfd = (int)syscall(__NR_perf_event_open, &pa, 0, -1, -1, 0);
+    uint64_t vlast = 0;
     gl_arena arena;
     if (gl_arena_init(&arena, 1 << 18)) {
         say("worker %ld: no memory for the layer arena", (long)arg);
@@ -314,6 +336,14 @@ static void *worker(void *arg)
         if (!len) len = off + (uint32_t)shape_rle(blocks, pay + off);
         uint32_t us = (uint32_t)((now() - t0) * 1e6);
         __atomic_add_fetch(&computed_us, us, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&st_compute_ns, (uint64_t)us * 1000, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&st_answers, 1, __ATOMIC_RELAXED);
+        __atomic_add_fetch(aflags & AN_WHOLE ? &st_whole : &st_shape, 1, __ATOMIC_RELAXED);
+        uint64_t v;
+        if (vfd >= 0 && read(vfd, &v, sizeof v) == (ssize_t)sizeof v) {
+            __atomic_add_fetch(&st_vpu, v - vlast, __ATOMIC_RELAXED);
+            vlast = v;
+        }
 
         if (r.via == VIA_SHM) {
             shm_deliver(st, &r, len, us);
@@ -378,6 +408,21 @@ static void *shm_main(void *arg)
         double t = now();
         if (t - last_beat > 0.1) {
             hw64(S_ALIVE, ++beat);
+            /* the stats block: vpu_stats's layout (requests, errors, busy, compute, pull, push, kind, threads,
+             * sequence), busy as the mean worker's; then PWGD, version 1, VPU instructions, whole and shape answers */
+            uint64_t cns = __atomic_load_n(&st_compute_ns, __ATOMIC_RELAXED);
+            hw64(S_STATS + 0, __atomic_load_n(&st_answers, __ATOMIC_RELAXED));
+            hw64(S_STATS + 8, __atomic_load_n(&st_errors, __ATOMIC_RELAXED));
+            hw64(S_STATS + 16, cns / (uint64_t)nworkers);
+            hw64(S_STATS + 24, cns);
+            hw64(S_STATS + 32, 0);
+            hw64(S_STATS + 40, __atomic_load_n(&st_push_ns, __ATOMIC_RELAXED));
+            hw64(S_STATS + 48, (uint64_t)nworkers << 32);
+            hw64(S_STATS + 56, beat);
+            hw64(S_STATS_EXT + 8, __atomic_load_n(&st_vpu, __ATOMIC_RELAXED));
+            hw64(S_STATS_EXT + 16, __atomic_load_n(&st_whole, __ATOMIC_RELAXED));
+            hw64(S_STATS_EXT + 24, __atomic_load_n(&st_shape, __ATOMIC_RELAXED));
+            hw64(S_STATS_EXT + 0, 0x0000000144475750ULL); /* "PWGD", then version 1 */
             last_beat = t;
         }
         if (memcmp((const void *)shm, "PWGS", 4) != 0 || hr32(S_VERSION) != PROTOCOL) {
