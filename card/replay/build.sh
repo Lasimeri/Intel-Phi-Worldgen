@@ -6,7 +6,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 lib="$here/../lib"
 out="$here/out"
 mkdir -p "$out"
-src=("$here/replay.c" "$lib/shape.c" "$lib/capfile.c" "$lib/genlayer.c" "$lib/surface.c")
+src=("$here/replay.c" "$lib/shape.c" "$lib/capfile.c" "$lib/genlayer.c" "$lib/surface.c" "$lib/carve.c")
 flags=(-O2 -std=gnu11 -Wall -Wextra -ffp-contract=off -I"$lib")
 cc "${flags[@]}" -o "$out/replay-host" "${src[@]}" -lpthread
 # the vector kernel: the series clang, -march=knc, against the 7120A tree's musl headers

@@ -71,6 +71,7 @@ import io.github.lasimeri.phiworldgen.mixins.AccessorGenLayerBiome;
 import io.github.lasimeri.phiworldgen.mixins.AccessorGenLayerEdge;
 import io.github.lasimeri.phiworldgen.mixins.AccessorGenLayerHills;
 import io.github.lasimeri.phiworldgen.mixins.AccessorGenLayerRiverMix;
+import io.github.lasimeri.phiworldgen.mixins.AccessorMapGenBase;
 import io.github.lasimeri.phiworldgen.mixins.AccessorWorldChunkManager;
 import io.github.lasimeri.phiworldgen.mixins.AccessorMathHelper;
 import io.github.lasimeri.phiworldgen.mixins.AccessorNoiseGeneratorImproved;
@@ -276,7 +277,15 @@ public final class Capture {
 
         s = open(b, "BLKS");
         for (Block k : new Block[] { Blocks.air, Blocks.stone, Blocks.bedrock, Blocks.gravel, Blocks.sand,
-            Blocks.sandstone, Blocks.water, Blocks.ice, Blocks.grass, Blocks.dirt, Blocks.lava }) b.putShort(blockId(k));
+            Blocks.sandstone, Blocks.water, Blocks.ice, Blocks.grass, Blocks.dirt, Blocks.lava, Blocks.flowing_water,
+            Blocks.flowing_lava }) b.putShort(blockId(k));
+        close(b, s);
+
+        // CARV: the carvers' ranges (MapGenBase.range, 8 in vanilla)
+        AccessorChunkProviderGenerate a = (AccessorChunkProviderGenerate) p;
+        s = open(b, "CARV");
+        b.putInt(((AccessorMapGenBase) a.phiwg$getCaves()).phiwg$getRange())
+            .putInt(((AccessorMapGenBase) a.phiwg$getRavines()).phiwg$getRange());
         close(b, s);
     }
 

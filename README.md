@@ -13,7 +13,7 @@ run on the card's 512-bit vector unit.
 | Terrain shape: 3D noise octaves | live, **vector unit** | replay 7 captures 0 differ; about 1.15 M VPU instructions a chunk (hardware counter) |
 | Terrain shape: 2D octaves, combine, interpolation | live, scalar | live check 0 differ |
 | Surface (`replaceBlocksForBiome`) | ported, replay-gated, not live yet | replay 267 chunks 0 differ (Mesa not ported) |
-| Caves, ravines | being ported | |
+| Caves, ravines (`MapGenCaves`, `MapGenRavine`, Forge's `digBlock`) | ported, replay-gated, not live yet | replay 267 chunks 0 differ; whole chunks from coordinates 261 of 261 equal |
 | Decorations (`populate`) | stay on the CPU | |
 
 The server asks ahead (a prefetch ring around each chunk it generates) and
@@ -30,7 +30,7 @@ seed, 1,089 chunks each (`docs/plan.md`): chunks per second up 12.5 to
 
 - `src/main/java/...`: the mod (mixins into `ChunkProviderGenerate`, the
   capture, the card client, `/phiwg`).
-- `card/lib/`: the C ports (`shape`, `vshape` on the vector unit,
+- `card/lib/`: the C ports (`shape`, `vshape` on the vector unit, `carve`,
   `genlayer`, `surface`) and the card's DMA engine (`cdma`).
 - `card/pwgd/`: the card daemon and its host-side checkers.
 - `card/replay/`: replays a capture's stages and compares every bit.

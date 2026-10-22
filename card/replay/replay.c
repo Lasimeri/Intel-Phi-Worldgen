@@ -10,6 +10,7 @@
 #include "capfile.h"
 #include "genlayer.h"
 #include "surface.h"
+#include "carve.h"
 #include "shape.h"
 #ifdef REPLAY_VPU
 #include "vshape.h"
@@ -23,6 +24,8 @@ typedef struct {
 static world W;
 static gl_world G;
 static surf_world S;
+static carve_world K;
+static int e2e_chunks;
 static int surf_skipped, surf_states;
 static job *jobs;
 static int njobs, nthreads = 1, rounds = 3, use_vector;
@@ -132,6 +135,7 @@ int main(int argc, char **argv)
     static gl_arena arena;
     if (gl_arena_init(&arena, 1 << 18)) return 1;
     if (surf_load(&S, &wf, path)) return 1;
+    if (carve_load(&K, &wf, path)) return 1;
     printf("surface: %s\n", S.have ? "SURB, SNOI, BLKS present" : "no surface tables (the surface stage is skipped)");
     printf("layers: %s\n", G.have ? "LAYR present" : "no LAYR (the biome stages are skipped)");
     printf("world: octaves %d %d %d %d, amplified %d\n", W.gen[0].n, W.gen[1].n, W.gen[2].n, W.gen[3].n,
@@ -139,10 +143,12 @@ int main(int argc, char **argv)
 
     DIR *d = opendir(argv[1]);
     if (!d) { perror(argv[1]); return 1; }
-    stage st[8] = { { "octaves", 0, "" }, { "combine (from captured octaves)", 0, "" },
+    stage st[11] = { { "octaves", 0, "" }, { "combine (from captured octaves)", 0, "" },
                     { "interpolation (from captured field)", 0, "" }, { "shape end to end", 0, "" },
                     { "biomes 10x10 from coordinates", 0, "" }, { "biomes 16x16 from coordinates", 0, "" },
-                    { "3D octaves on the vector unit", 0, "" }, { "surface (from captured shape)", 0, "" } };
+                    { "3D octaves on the vector unit", 0, "" }, { "surface (from captured shape)", 0, "" },
+                    { "caves (from captured surface)", 0, "" }, { "ravines (from captured caves)", 0, "" },
+                    { "whole chunk from coordinates", 0, "" } };
     int cap = 64;
     jobs = malloc(sizeof(job) * cap);
     struct dirent *e;
@@ -235,6 +241,47 @@ int main(int argc, char **argv)
                             snprintf(st[7].first, sizeof st[7].first, "chunk %d,%d end state of slot %d not captured", cx, cz, es[e2].slot);
                     }
                 }
+                /* the carvers from the captured surface (and its captured end states), then from the captured caves */
+                if (K.have) {
+                    surf_state cs[256];
+                    int ncs = rd32(ssta);
+                    if (ncs > 256) ncs = 256;
+                    for (int c = 0; c < ncs; c++) {
+                        const uint8_t *q = ssta + 4 + 8 * c;
+                        cs[c] = (surf_state){ (uint8_t)rd16(q), q[6], rd16(q + 2), rd16(q + 4) };
+                    }
+                    carve_cols cols;
+                    carve_columns(&S, s16, cs, ncs, &cols);
+                    const uint8_t *surf = cap_need(&cf, path, "SURF", 131072), *cave = cap_need(&cf, path, "CAVE", 131072);
+                    for (int i = 0; i < 65536; i++) sb[i] = rd16(surf + 2 * i);
+                    carve_caves(&K, &cols, cx, cz, sb);
+                    cmp_blocks(&st[8], cx, cz, cave, sb);
+                    for (int i = 0; i < 65536; i++) sb[i] = rd16(cave + 2 * i);
+                    carve_ravines(&K, &cols, cx, cz, sb);
+                    cmp_blocks(&st[9], cx, cz, cap_need(&cf, path, "RAVN", 131072), sb);
+                    /* the whole chain from coordinates, as pwgd runs it: biomes, shape, surface, caves, ravines */
+                    uint16_t s10[100];
+                    gl_slots10(&G, &arena, cx, cz, s10);
+                    double e0[25], e1[825], e2f[825], e3[825], ef[825];
+                    shape_octaves(&W, cx, cz, e0, e1, e2f, e3);
+                    shape_combine(&W, s10, e0, e1, e2f, e3, ef);
+                    shape_interp(ef, sb);
+                    memset(sm, 0, sizeof sm);
+                    surf_state ee[256];
+                    int nee = surf_chunk(&S, cx, cz, s16, sb, sm, ee);
+                    if (nee >= 0) {
+                        carve_columns(&S, s16, ee, nee, &cols);
+                        carve_caves(&K, &cols, cx, cz, sb);
+                        carve_ravines(&K, &cols, cx, cz, sb);
+                        int b10 = st[10].bad;
+                        cmp_blocks(&st[10], cx, cz, cap_need(&cf, path, "RAVN", 131072), sb);
+                        const uint8_t *meta = cap_need(&cf, path, "META", 65536);
+                        for (int i = 0; st[10].bad == b10 && i < 65536; i++)
+                            if (meta[i] != sm[i] && st[10].bad++ == 0)
+                                snprintf(st[10].first, sizeof st[10].first, "chunk %d,%d META[%d] captured %u got %u", cx, cz, i, meta[i], sm[i]);
+                        e2e_chunks++;
+                    }
+                }
             }
         }
 #ifdef REPLAY_VPU
@@ -254,9 +301,9 @@ int main(int argc, char **argv)
 
     int all = 0;
 #ifdef REPLAY_VPU
-    int nst = 8;
+    int nst = 11;
 #else
-    int nst = 8;
+    int nst = 11;
 #endif
     for (int s = 0; s < nst; s++) {
         if (!G.have && (s == 4 || s == 5)) continue;
@@ -264,11 +311,13 @@ int main(int argc, char **argv)
         if (s == 6) continue;
 #endif
         if (s == 7 && !S.have) continue;
+        if ((s == 8 || s == 9 || s == 10) && !K.have) continue;
         printf("%-38s %d of %d chunks differ%s%s\n", st[s].name, st[s].bad, njobs, st[s].bad ? ": first " : "",
                st[s].first);
         all += st[s].bad;
     }
     if (S.have) printf("surface: %d chunks skipped (a biome whose surface is not ported, e.g. Mesa), %d end states checked\n", surf_skipped, surf_states);
+    if (K.have) printf("whole chunk: %d chunks compared (blocks after the ravines, and metadata)\n", e2e_chunks);
 
     pthread_t th[1024];
     if (nthreads > 1024) nthreads = 1024;

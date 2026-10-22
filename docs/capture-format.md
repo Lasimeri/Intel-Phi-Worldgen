@@ -16,6 +16,12 @@ a 4-byte ASCII tag, a `u32` payload length in bytes, and the payload.
 | `PARB` | `f32[25]`: `parabolicField` |
 | `BIOM` | `u32` count (256); for each biome id: `u8` present; `f32` rootHeight; `f32` heightVariation; `u16` top block id; `u16` filler block id; `u16` n; n bytes: the biome's class name |
 | `SINT` | `f32[65536]`: `MathHelper`'s sine table |
+| `BIOX` | `u32` count (256); per slot 8 bytes: `u8` present, `u8` `getBiomeClass` index, `u8` `getTempCategory` ordinal (OCEAN 0, COLD 1, MEDIUM 2, WARM 3), `u8` flags (1 snow, 2 `BiomeGenMesa`, 4 Forge's ocean list, 8 the jungle class), `i32` `biomeID` |
+| `LAYR` | the GenLayer chains: `u32` layers, `i32` the 10 x 10 root, `i32` the 16 x 16 root; per layer in post order: `u8` kind (`card/lib/genlayer.h`), `u8` mode, `i64` baseSeed, `i64` worldGenSeed, `i32` input, `i32` second input; `GenLayerBiome` adds per BiomeType `u8` modded, `u32` n, n x (`i32` id, `i32` weight). Absent when a layer is not exactly a vanilla class |
+| `SURB` | `u32` count (256); per slot 16 bytes: `u8` present, kind (`card/lib/surface.h`), mutated base slot, top metadata, Hills flags, Taiga type, air flags, first slot of the same object; `u16` top id, filler id; `f32` temperature |
+| `SNOI` | the stone noise (`field_147430_m`): `u32` octaves; per octave `i32[512]` permutations, `f64` x, y, z |
+| `BLKS` | `u16` ids: air, stone, bedrock, gravel, sand, sandstone, water, ice, grass, dirt, lava, flowing water, flowing lava |
+| `CARV` | `i32` the cave carver's range, `i32` the ravine carver's |
 
 ## `c_X_Z.bin` (magic `PWGC`): one per chunk
 
@@ -37,6 +43,7 @@ In the order the generator produces them:
 | `CAVE` | `u16[65536]` block ids | at the return of the cave generator's `func_151539_a` |
 | `RAVN` | `u16[65536]` block ids | at the return of the ravine generator's |
 | `FLAG` | `u32`: bit 0 = a Forge `ReplaceBiomeBlocks` handler denied the surface | |
+| `SSTA` | `u32` n; n x (`u16` slot, `u16` top id, `u16` filler id, `u8` top metadata, `u8` 0): the fields of every biome object whose surface override rewrites them | at the return of `replaceBlocksForBiome` |
 
 The noise arrays are indexed `(x * 5 + z) * 33 + y` (3D) and `x * 5 + z`
 (2D), the order `populateNoiseArray` fills them in. Block arrays are indexed

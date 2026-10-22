@@ -11,6 +11,7 @@
     "AccessorBiomeGenTaiga",
     "AccessorChunkProviderGenerate",
     "AccessorGenLayer",
+    "AccessorMapGenBase",
     "AccessorGenLayerBiome",
     "AccessorGenLayerEdge",
     "AccessorGenLayerHills",
