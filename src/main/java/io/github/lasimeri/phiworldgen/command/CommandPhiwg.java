@@ -35,7 +35,7 @@ public class CommandPhiwg extends CommandBase {
 
     @Override
     public String getCommandUsage(ICommandSender sender) {
-        return "/phiwg pregen <radius> [dx dz] | report | reset | capture <name> [biome radius] | verify <name> | card [status|on|off|check on|check off|reset|radius N]";
+        return "/phiwg pregen <radius> [dx dz] | report | reset | capture <name> [biome radius] | verify <name> | card [status|on|off|check on|check off|reset|radius N] | dump <name> <radius> [dx dz]";
     }
 
     @Override
@@ -56,12 +56,72 @@ public class CommandPhiwg extends CommandBase {
             case "capture" -> capture(sender, args);
             case "verify" -> verify(sender, args);
             case "card" -> card(sender, args);
+            case "dump" -> dump(sender, args);
             default -> throw new WrongUsageException(getCommandUsage(sender));
         }
     }
 
+    /**
+     * Writes the pregen square of radius r (centred dx, dz chunks from spawn, 64, 0 as pregen), as it stands now, to
+     * phiwg-dumps/NAME.bin in the server directory: per chunk (x outer, z inner) its coordinates, populated flag,
+     * 256 biome ids, and per section a presence byte and its id, high-id and metadata arrays. Light is left out.
+     * Two runs of one seed (card off and on) must write identical files.
+     */
+    private void dump(ICommandSender sender, String[] args) {
+        if (args.length != 3 && args.length != 5) throw new WrongUsageException(getCommandUsage(sender));
+        int r = parseIntBounded(sender, args[2], 0, 64);
+        WorldServer world = overworld();
+        ChunkCoordinates spawn = world.getSpawnPoint();
+        // the square pregen makes: 64 chunks east of spawn by default (the spawn area is generated at start and ticks)
+        int dx = args.length == 5 ? parseInt(sender, args[3]) : 64, dz = args.length == 5 ? parseInt(sender, args[4]) : 0;
+        int cx0 = (spawn.posX >> 4) + dx, cz0 = (spawn.posZ >> 4) + dz;
+        try {
+            int n = writeDump(world, cx0, cz0, r, args[1]);
+            send(sender, String.format("phiwg dump: %d chunks around %d,%d to %s", n, cx0, cz0,
+                Paths.get("phiwg-dumps", args[1] + ".bin").toAbsolutePath()));
+        } catch (IOException e) {
+            throw new CommandException("phiwg dump: " + e.getMessage());
+        }
+    }
+
+    /** The dump file of the square around cx0, cz0 (see dump); returns the chunks written. */
+    private static int writeDump(WorldServer world, int cx0, int cz0, int r, String name) throws IOException {
+        Path file = Paths.get("phiwg-dumps", name + ".bin");
+        java.nio.file.Files.createDirectories(file.getParent());
+        int n = 0;
+        try (java.io.DataOutputStream out = new java.io.DataOutputStream(
+            new java.io.BufferedOutputStream(java.nio.file.Files.newOutputStream(file), 1 << 20))) {
+            for (int cx = cx0 - r; cx <= cx0 + r; cx++) {
+                for (int cz = cz0 - r; cz <= cz0 + r; cz++) {
+                    net.minecraft.world.chunk.Chunk ch = world.theChunkProviderServer.loadChunk(cx, cz);
+                    out.writeInt(cx);
+                    out.writeInt(cz);
+                    out.writeBoolean(ch.isTerrainPopulated);
+                    out.write(ch.getBiomeArray());
+                    for (net.minecraft.world.chunk.storage.ExtendedBlockStorage s : ch.getBlockStorageArray()) {
+                        out.writeBoolean(s != null);
+                        if (s == null) continue;
+                        out.write(s.getBlockLSBArray());
+                        out.writeBoolean(s.getBlockMSBArray() != null);
+                        if (s.getBlockMSBArray() != null) out.write(s.getBlockMSBArray().data);
+                        out.write(s.getMetadataArray().data);
+                    }
+                    n++;
+                }
+            }
+        }
+        return n;
+    }
+
     /** Generates a (2r+1)^2 square of chunks centred dx, dz chunks from the spawn chunk, on this thread. */
     private void pregen(ICommandSender sender, String[] args) {
+        // a trailing "dump NAME" writes the square right after generating it, in the same tick: no world tick
+        // (liquids settling, falling blocks) runs in between, so card-off and card-on worlds compare exactly
+        String dumpName = null;
+        if (args.length >= 4 && args[args.length - 2].equals("dump")) {
+            dumpName = args[args.length - 1];
+            args = java.util.Arrays.copyOf(args, args.length - 2);
+        }
         if (args.length != 2 && args.length != 4) throw new WrongUsageException(getCommandUsage(sender));
         int r = parseIntBounded(sender, args[1], 0, 256);
         int dx = args.length == 4 ? parseInt(sender, args[2]) : 64;
@@ -78,11 +138,20 @@ public class CommandPhiwg extends CommandBase {
             }
         }
         double s = (System.nanoTime() - t0) / 1e9;
+        String dumped = "";
+        if (dumpName != null) {
+            try {
+                dumped = String.format("; dumped %d chunks to %s", writeDump(world, cx0, cz0, r, dumpName),
+                    Paths.get("phiwg-dumps", dumpName + ".bin").toAbsolutePath());
+            } catch (IOException e) {
+                throw new CommandException("phiwg pregen: dump: " + e.getMessage());
+            }
+        }
         long n = GenProfile.chunks();
         send(
             sender,
             String.format(
-                "phiwg pregen: centre chunk %d,%d radius %d: %d chunks generated in %.3f s, %.1f chunks/s (seed %d)%n%s",
+                "phiwg pregen: centre chunk %d,%d radius %d: %d chunks generated in %.3f s, %.1f chunks/s (seed %d)%s%n%s",
                 cx0,
                 cz0,
                 r,
@@ -90,6 +159,7 @@ public class CommandPhiwg extends CommandBase {
                 s,
                 n / s,
                 world.getSeed(),
+                dumped,
                 GenProfile.report("pregen")));
     }
 

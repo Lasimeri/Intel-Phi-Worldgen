@@ -15,3 +15,18 @@ The server command `/phiwg`, for the console or an operator:
 
 Everything printed also goes to the log
 (`run/server/logs/fml-server-latest.log`).
+
+## /phiwg dump NAME RADIUS [DX DZ]
+
+Writes the square pregen made (radius chunks, centred DX, DZ chunks from the
+spawn chunk; 64, 0 by default, as pregen) to `phiwg-dumps/NAME.bin` in the
+server directory: per chunk, x outer and z inner, its coordinates, the
+populated flag, the 256 biome ids, and per section a presence byte and its id,
+high-id and metadata arrays (light left out). Two runs of one seed must write
+identical files; `bench.sh` compares the card-off and card-on worlds of every
+pair this way, and checks the method itself with an off/off control pair.
+
+The square matters: the spawn area is generated at server start and keeps
+ticking (grass spreads, gravel and sand fall), so a dump of it differs between
+two vanilla runs (11 of 1,089 chunks did); the pregen square, 64 chunks away
+and never near a player, does not.
