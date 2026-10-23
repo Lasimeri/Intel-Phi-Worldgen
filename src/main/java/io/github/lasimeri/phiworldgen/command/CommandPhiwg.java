@@ -28,6 +28,10 @@ import io.github.lasimeri.phiworldgen.profile.GenProfile;
 /** /phiwg pregen | report | reset | capture | verify. See CommandPhiwg.md. */
 public class CommandPhiwg extends CommandBase {
 
+    /** The last pregen's wall time and chunks generated, for the autotest. */
+    public static volatile double lastSeconds;
+    public static volatile long lastChunks;
+
     @Override
     public String getCommandName() {
         return "phiwg";
@@ -35,7 +39,7 @@ public class CommandPhiwg extends CommandBase {
 
     @Override
     public String getCommandUsage(ICommandSender sender) {
-        return "/phiwg pregen <radius> [dx dz] | report | reset | capture <name> [biome radius] | verify <name> | card [status|on|off|check on|check off|reset|radius N] | dump <name> <radius> [dx dz]";
+        return "/phiwg pregen <radius> [dx dz] | report | reset | capture <name> [biome radius] | verify <name> | card [status|on|off|check on|check off|reset|radius N] | dump <name> <radius> [dx dz] | rwgcap <name> [biome radius]";
     }
 
     @Override
@@ -57,6 +61,7 @@ public class CommandPhiwg extends CommandBase {
             case "verify" -> verify(sender, args);
             case "card" -> card(sender, args);
             case "dump" -> dump(sender, args);
+            case "rwgcap" -> rwgcap(sender, args);
             default -> throw new WrongUsageException(getCommandUsage(sender));
         }
     }
@@ -73,18 +78,50 @@ public class CommandPhiwg extends CommandBase {
         WorldServer world = overworld();
         ChunkCoordinates spawn = world.getSpawnPoint();
         // the square pregen makes: 64 chunks east of spawn by default (the spawn area is generated at start and ticks)
-        int dx = args.length == 5 ? parseInt(sender, args[3]) : 64, dz = args.length == 5 ? parseInt(sender, args[4]) : 0;
+        int dx = args.length == 5 ? parseInt(sender, args[3]) : 64,
+            dz = args.length == 5 ? parseInt(sender, args[4]) : 0;
         int cx0 = (spawn.posX >> 4) + dx, cz0 = (spawn.posZ >> 4) + dz;
         try {
             int n = writeDump(world, cx0, cz0, r, args[1]);
-            send(sender, String.format("phiwg dump: %d chunks around %d,%d to %s", n, cx0, cz0,
-                Paths.get("phiwg-dumps", args[1] + ".bin").toAbsolutePath()));
+            send(
+                sender,
+                String.format(
+                    "phiwg dump: %d chunks around %d,%d to %s",
+                    n,
+                    cx0,
+                    cz0,
+                    Paths.get("phiwg-dumps", args[1] + ".bin")
+                        .toAbsolutePath()));
         } catch (IOException e) {
             throw new CommandException("phiwg dump: " + e.getMessage());
         }
     }
 
     /** The dump file of the square around cx0, cz0 (see dump); returns the chunks written. */
+    /**
+     * EndlessIDs (GT New Horizons) stores biome ids and block ids past the vanilla arrays and stops the game when
+     * a mod reads the vanilla biome array; with it loaded the dump goes through the accessors it patches.
+     */
+    private static final boolean EXTENDED_IDS = cpw.mods.fml.common.Loader.isModLoaded("endlessids");
+
+    /**
+     * A chunk as the EndlessIDs dump writes it: 256 biome ids, then per section a presence byte and id, metadata per
+     * block (y, z, x), as shorts.
+     */
+    private static void writeExtended(java.io.DataOutputStream out, WorldServer world,
+        net.minecraft.world.chunk.Chunk ch) throws IOException {
+        for (int z = 0; z < 16; z++) for (int x = 0; x < 16; x++)
+            out.writeShort(ch.getBiomeGenForWorldCoords(x, z, world.getWorldChunkManager()).biomeID);
+        for (net.minecraft.world.chunk.storage.ExtendedBlockStorage s : ch.getBlockStorageArray()) {
+            out.writeBoolean(s != null);
+            if (s == null) continue;
+            for (int y = 0; y < 16; y++) for (int z = 0; z < 16; z++) for (int x = 0; x < 16; x++) {
+                out.writeShort(net.minecraft.block.Block.getIdFromBlock(s.getBlockByExtId(x, y, z)));
+                out.writeShort(s.getExtBlockMetadata(x, y, z));
+            }
+        }
+    }
+
     private static int writeDump(WorldServer world, int cx0, int cz0, int r, String name) throws IOException {
         Path file = Paths.get("phiwg-dumps", name + ".bin");
         java.nio.file.Files.createDirectories(file.getParent());
@@ -97,6 +134,11 @@ public class CommandPhiwg extends CommandBase {
                     out.writeInt(cx);
                     out.writeInt(cz);
                     out.writeBoolean(ch.isTerrainPopulated);
+                    if (EXTENDED_IDS) {
+                        writeExtended(out, world, ch);
+                        n++;
+                        continue;
+                    }
                     out.write(ch.getBiomeArray());
                     for (net.minecraft.world.chunk.storage.ExtendedBlockStorage s : ch.getBlockStorageArray()) {
                         out.writeBoolean(s != null);
@@ -141,13 +183,18 @@ public class CommandPhiwg extends CommandBase {
         String dumped = "";
         if (dumpName != null) {
             try {
-                dumped = String.format("; dumped %d chunks to %s", writeDump(world, cx0, cz0, r, dumpName),
-                    Paths.get("phiwg-dumps", dumpName + ".bin").toAbsolutePath());
+                dumped = String.format(
+                    "; dumped %d chunks to %s",
+                    writeDump(world, cx0, cz0, r, dumpName),
+                    Paths.get("phiwg-dumps", dumpName + ".bin")
+                        .toAbsolutePath());
             } catch (IOException e) {
                 throw new CommandException("phiwg pregen: dump: " + e.getMessage());
             }
         }
         long n = GenProfile.chunks();
+        lastSeconds = s;
+        lastChunks = n;
         send(
             sender,
             String.format(
@@ -208,6 +255,24 @@ public class CommandPhiwg extends CommandBase {
                 found));
     }
 
+    /** RWG's height stage on a chunk set, for the card's replay (capture/RwgCapture). */
+    private void rwgcap(ICommandSender sender, String[] args) {
+        if (args.length != 2 && args.length != 3) throw new WrongUsageException(getCommandUsage(sender));
+        int radius = args.length == 3 ? parseIntBounded(sender, args[2], 0, 4096) : 256;
+        Path dir = captureDir(args[1]);
+        try {
+            send(
+                sender,
+                "phiwg rwgcap " + args[1]
+                    + ": "
+                    + io.github.lasimeri.phiworldgen.capture.RwgCapture.capture(overworld(), dir, radius)
+                    + " to "
+                    + dir);
+        } catch (IOException | ReflectiveOperationException | IllegalStateException e) {
+            throw new CommandException("phiwg rwgcap: " + e);
+        }
+    }
+
     /** The card: status, on or off, check mode, statistics reset, prefetch radius. */
     private void card(ICommandSender sender, String[] args) {
         String what = args.length > 1 ? args[1] : "status";
@@ -215,12 +280,20 @@ public class CommandPhiwg extends CommandBase {
             case "on" -> CardShape.enabled = true;
             case "off" -> CardShape.enabled = false;
             case "check" -> CardShape.check = args.length > 2 && args[2].equals("on");
-            case "reset" -> CardShape.resetStats();
+            case "reset" -> {
+                CardShape.resetStats();
+                if (cpw.mods.fml.common.Loader.isModLoaded("RWG"))
+                    io.github.lasimeri.phiworldgen.card.RwgCard.resetStats();
+            }
             case "radius" -> CardShape.radius = parseIntBounded(sender, args.length > 2 ? args[2] : "", 0, 16);
             case "status" -> {}
             default -> throw new WrongUsageException(getCommandUsage(sender));
         }
-        send(sender, CardShape.status());
+        send(
+            sender,
+            CardShape.status() + (cpw.mods.fml.common.Loader.isModLoaded("RWG")
+                ? "; " + io.github.lasimeri.phiworldgen.card.RwgCard.status()
+                : ""));
     }
 
     private void verify(ICommandSender sender, String[] args) {

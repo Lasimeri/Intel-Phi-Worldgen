@@ -8,13 +8,14 @@ public final class GenProfile {
 
     public static final int PROVIDE = 0, SHAPE = 1, BIOMES10 = 2, NOISE = 3, OCTAVES = 4, INTERP = 5, CARD = 6,
         PREFETCH = 7, BIOMES16 = 8, SURFACE = 9, CAVES = 10, RAVINES = 11, STRUCTURES = 12, CHUNK = 13, SKYLIGHT = 14,
-        POPULATE = 15;
+        POPULATE = 15, RWG_TERRAIN = 16, RWG_HEIGHTS = 17, RWG_MAPGEN = 18;
     private static final String[] NAMES = { "provideChunk", "  shape (func_147424_a)",
         "    biomes 10x10 (getBiomesForGeneration)", "    noise field (func_147423_a)",
         "      octaves (4 x generateNoiseOctaves)", "    interpolation to blocks", "  card shape (prefetch + take)",
         "    prefetch (biomes, requests)", "  biomes 16x16 (loadBlockGeneratorData)",
         "  surface (replaceBlocksForBiome)", "  caves (MapGenCaves)", "  ravines (MapGenRavine)",
-        "  structures (4 x MapGenStructure)", "  new Chunk", "  generateSkylightMap", "populate" };
+        "  structures (4 x MapGenStructure)", "  new Chunk", "  generateSkylightMap", "populate",
+        "  RWG terrain (generateTerrain)", "    RWG heights (getNewNoise)", "  RWG biome map gens (generateMapGen)" };
     private static final int N = NAMES.length;
 
     private static final long[] start = new long[N];
@@ -54,6 +55,14 @@ public final class GenProfile {
 
     public static void endIfOpen(int phase) {
         end(phase);
+    }
+
+    public static long calls(int phase) {
+        return calls[phase];
+    }
+
+    public static double msPerCall(int phase) {
+        return calls[phase] == 0 ? 0.0 : total[phase] / 1e6 / calls[phase];
     }
 
     public static long chunks() {

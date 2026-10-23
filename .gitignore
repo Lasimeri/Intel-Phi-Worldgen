@@ -42,3 +42,6 @@ layout.json
 
 # card tool binaries
 /card/tools/vpucount
+
+# third-party jars compiled against (not ours to publish)
+/libs/

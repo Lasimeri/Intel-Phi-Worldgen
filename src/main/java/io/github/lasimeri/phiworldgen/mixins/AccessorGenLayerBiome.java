@@ -8,7 +8,9 @@ import net.minecraftforge.common.BiomeManager.BiomeEntry;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
-/** GenLayerBiome's weighted lists per BiomeType, as its constructor built them (a Forge field). See AccessorGenLayer.md. */
+/**
+ * GenLayerBiome's weighted lists per BiomeType, as its constructor built them (a Forge field). See AccessorGenLayer.md.
+ */
 @Mixin(GenLayerBiome.class)
 public interface AccessorGenLayerBiome {
 

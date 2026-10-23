@@ -8,9 +8,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import net.minecraft.block.Block;
-import net.minecraft.world.World;
 import net.minecraft.block.material.Material;
 import net.minecraft.init.Blocks;
+import net.minecraft.world.World;
 import net.minecraft.world.biome.BiomeGenBase;
 import net.minecraft.world.biome.BiomeGenBeach;
 import net.minecraft.world.biome.BiomeGenDesert;
@@ -32,6 +32,12 @@ import net.minecraft.world.biome.BiomeGenSwamp;
 import net.minecraft.world.biome.BiomeGenTaiga;
 import net.minecraft.world.biome.WorldChunkManager;
 import net.minecraft.world.gen.ChunkProviderGenerate;
+import net.minecraft.world.gen.MapGenCaves;
+import net.minecraft.world.gen.MapGenRavine;
+import net.minecraft.world.gen.NoiseGeneratorImproved;
+import net.minecraft.world.gen.NoiseGeneratorOctaves;
+import net.minecraft.world.gen.NoiseGeneratorPerlin;
+import net.minecraft.world.gen.NoiseGeneratorSimplex;
 import net.minecraft.world.gen.layer.GenLayer;
 import net.minecraft.world.gen.layer.GenLayerAddIsland;
 import net.minecraft.world.gen.layer.GenLayerAddMushroomIsland;
@@ -53,29 +59,23 @@ import net.minecraft.world.gen.layer.GenLayerSmooth;
 import net.minecraft.world.gen.layer.GenLayerVoronoiZoom;
 import net.minecraft.world.gen.layer.GenLayerZoom;
 import net.minecraftforge.common.BiomeManager;
-import net.minecraft.world.gen.MapGenCaves;
-import net.minecraft.world.gen.MapGenRavine;
-import net.minecraft.world.gen.NoiseGeneratorImproved;
-import net.minecraft.world.gen.NoiseGeneratorOctaves;
-import net.minecraft.world.gen.NoiseGeneratorPerlin;
-import net.minecraft.world.gen.NoiseGeneratorSimplex;
 
 import io.github.lasimeri.phiworldgen.mixins.AccessorBiomeGenHills;
 import io.github.lasimeri.phiworldgen.mixins.AccessorBiomeGenMutated;
 import io.github.lasimeri.phiworldgen.mixins.AccessorBiomeGenTaiga;
 import io.github.lasimeri.phiworldgen.mixins.AccessorChunkProviderGenerate;
-import io.github.lasimeri.phiworldgen.mixins.AccessorNoiseGeneratorPerlin;
-import io.github.lasimeri.phiworldgen.mixins.AccessorNoiseGeneratorSimplex;
 import io.github.lasimeri.phiworldgen.mixins.AccessorGenLayer;
 import io.github.lasimeri.phiworldgen.mixins.AccessorGenLayerBiome;
 import io.github.lasimeri.phiworldgen.mixins.AccessorGenLayerEdge;
 import io.github.lasimeri.phiworldgen.mixins.AccessorGenLayerHills;
 import io.github.lasimeri.phiworldgen.mixins.AccessorGenLayerRiverMix;
 import io.github.lasimeri.phiworldgen.mixins.AccessorMapGenBase;
-import io.github.lasimeri.phiworldgen.mixins.AccessorWorldChunkManager;
 import io.github.lasimeri.phiworldgen.mixins.AccessorMathHelper;
 import io.github.lasimeri.phiworldgen.mixins.AccessorNoiseGeneratorImproved;
 import io.github.lasimeri.phiworldgen.mixins.AccessorNoiseGeneratorOctaves;
+import io.github.lasimeri.phiworldgen.mixins.AccessorNoiseGeneratorPerlin;
+import io.github.lasimeri.phiworldgen.mixins.AccessorNoiseGeneratorSimplex;
+import io.github.lasimeri.phiworldgen.mixins.AccessorWorldChunkManager;
 
 /** Writes the generator's state and each captured chunk's stage boundaries in docs/capture-format.md. */
 public final class Capture {
@@ -210,9 +210,10 @@ public final class Capture {
         if (c == BiomeGenHills.class) return SK_HILLS;
         if (c == BiomeGenTaiga.class) return SK_TAIGA;
         // BiomeGenMutated itself, or vanilla's anonymous subclasses of it (BiomeGenForest's), which keep its surface
-        if (g instanceof BiomeGenMutated && (c == BiomeGenMutated.class || (c.getSuperclass() == BiomeGenMutated.class
-            && java.util.Arrays.asList(PLAIN_SURFACE)
-                .contains(c.getEnclosingClass())))) return SK_MUTATED;
+        if (g instanceof BiomeGenMutated && (c == BiomeGenMutated.class
+            || (c.getSuperclass() == BiomeGenMutated.class && java.util.Arrays.asList(PLAIN_SURFACE)
+                .contains(c.getEnclosingClass()))))
+            return SK_MUTATED;
         return java.util.Arrays.asList(PLAIN_SURFACE)
             .contains(c) ? SK_DEFAULT : SK_UNPORTED;
     }
@@ -356,8 +357,9 @@ public final class Capture {
                 | (c == BiomeGenJungle.class ? 8 : 0);
             b.put((byte) 1)
                 .put((byte) classes.indexOf(c))
-                .put((byte) g.getTempCategory()
-                    .ordinal())
+                .put(
+                    (byte) g.getTempCategory()
+                        .ordinal())
                 .put((byte) flags)
                 .putInt(g.biomeID);
         }
@@ -383,10 +385,12 @@ public final class Capture {
         for (GenLayer l : order) {
             GenLayer[] in = inputs(l);
             AccessorGenLayer a = (AccessorGenLayer) l;
-            b.put((byte) java.util.Arrays.asList(LAYER_KINDS)
-                .indexOf(l.getClass()))
-                .put((byte) (l instanceof GenLayerEdge e ? ((AccessorGenLayerEdge) e).phiwg$getMode()
-                    .ordinal() : 0))
+            b.put(
+                (byte) java.util.Arrays.asList(LAYER_KINDS)
+                    .indexOf(l.getClass()))
+                .put(
+                    (byte) (l instanceof GenLayerEdge e ? ((AccessorGenLayerEdge) e).phiwg$getMode()
+                        .ordinal() : 0))
                 .putLong(a.phiwg$getBaseSeed())
                 .putLong(a.phiwg$getWorldGenSeed())
                 .putInt(in.length > 0 ? index.get(in[0]) : -1)
@@ -412,7 +416,8 @@ public final class Capture {
             return new GenLayer[] { a.phiwg$getBiomes(), a.phiwg$getRivers() };
         }
         GenLayer p = ((AccessorGenLayer) l).phiwg$getParent();
-        if (l instanceof GenLayerHills h) return new GenLayer[] { p, ((AccessorGenLayerHills) h).phiwg$getRiverNoise() };
+        if (l instanceof GenLayerHills h)
+            return new GenLayer[] { p, ((AccessorGenLayerHills) h).phiwg$getRiverNoise() };
         return p == null ? new GenLayer[0] : new GenLayer[] { p };
     }
 

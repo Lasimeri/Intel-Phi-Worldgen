@@ -34,5 +34,9 @@
  * For more details, see https://docs.gradle.org/8.0.1/userguide/java_library_plugin.html#sec:java_library_configurations_graph
  */
 dependencies {
+    // RWG (Realistic World Gen alpha 1.5.2, the world type GT New Horizons locks), compiled against as shipped (SRG
+    // names; the late mixins use them with remap off) and never in the jar or the dev runs. libs/ holds a copy of the
+    // jar GTNH ships (gitignored). Build with --no-configuration-cache (RFG's applyJST wants a JDK 21 otherwise).
+    compileOnly(files("libs/RWG-alpha-1.5.2.jar"))
     //runtimeOnlyNonPublishable("com.github.GTNewHorizons:NotEnoughItems:2.7.69-GTNH:dev")
 }

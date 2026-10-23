@@ -164,7 +164,9 @@ public final class CardShape {
         return b;
     }
 
-    /** A whole answer into provideChunk's arrays: per column (x << 4 | z) from y 0, runs of (u16 id, u8 meta, u8 n-1). */
+    /**
+     * A whole answer into provideChunk's arrays: per column (x << 4 | z) from y 0, runs of (u16 id, u8 meta, u8 n-1).
+     */
     public static void decodeWhole(byte[] a, Block[] blocks, byte[] metas) {
         int p = runsAt(a);
         p += 2 + 8 * u16(a, p);
@@ -239,7 +241,8 @@ public final class CardShape {
                     int i = (y & 15) << 8 | bz << 4 | bx;
                     e.getBlockLSBArray()[i] = (byte) id;
                     if (id > 255) {
-                        if (e.getBlockMSBArray() == null) e.setBlockMSBArray(new net.minecraft.world.chunk.NibbleArray(4096, 4));
+                        if (e.getBlockMSBArray() == null)
+                            e.setBlockMSBArray(new net.minecraft.world.chunk.NibbleArray(4096, 4));
                         e.getBlockMSBArray()
                             .set(bx, y & 15, bz, (id & 3840) >> 8);
                     }
@@ -255,7 +258,8 @@ public final class CardShape {
             }
         }
         for (int s = 0; s < 16; s++) if (st[s] != null) {
-            ((io.github.lasimeri.phiworldgen.mixins.AccessorExtendedBlockStorage) st[s]).phiwg$setBlockRefCount(count[s]);
+            ((io.github.lasimeri.phiworldgen.mixins.AccessorExtendedBlockStorage) st[s])
+                .phiwg$setBlockRefCount(count[s]);
             ((io.github.lasimeri.phiworldgen.mixins.AccessorExtendedBlockStorage) st[s]).phiwg$setTickRefCount(tick[s]);
         }
         return ch;
@@ -268,16 +272,18 @@ public final class CardShape {
         for (int s = 0; s < 16; s++) {
             if ((a[s] == null) != (b[s] == null)) return "section " + s + " present in one only";
             if (a[s] == null) continue;
-            if (!java.util.Arrays.equals(a[s].getBlockLSBArray(), b[s].getBlockLSBArray())) return "section " + s + " ids";
+            if (!java.util.Arrays.equals(a[s].getBlockLSBArray(), b[s].getBlockLSBArray()))
+                return "section " + s + " ids";
             if (!java.util.Arrays.equals(a[s].getMetadataArray().data, b[s].getMetadataArray().data))
                 return "section " + s + " metadata";
             if ((a[s].getBlockMSBArray() == null) != (b[s].getBlockMSBArray() == null)
-                || (a[s].getBlockMSBArray() != null && !java.util.Arrays.equals(a[s].getBlockMSBArray().data, b[s].getBlockMSBArray().data)))
+                || (a[s].getBlockMSBArray() != null
+                    && !java.util.Arrays.equals(a[s].getBlockMSBArray().data, b[s].getBlockMSBArray().data)))
                 return "section " + s + " high ids";
             io.github.lasimeri.phiworldgen.mixins.AccessorExtendedBlockStorage x = (io.github.lasimeri.phiworldgen.mixins.AccessorExtendedBlockStorage) a[s],
                 y = (io.github.lasimeri.phiworldgen.mixins.AccessorExtendedBlockStorage) b[s];
-            if (x.phiwg$getBlockRefCount() != y.phiwg$getBlockRefCount() || x.phiwg$getTickRefCount() != y.phiwg$getTickRefCount())
-                return "section " + s + " counts";
+            if (x.phiwg$getBlockRefCount() != y.phiwg$getBlockRefCount()
+                || x.phiwg$getTickRefCount() != y.phiwg$getTickRefCount()) return "section " + s + " counts";
         }
         return null;
     }
@@ -304,8 +310,7 @@ public final class CardShape {
             Block card = blocks[i];
             boolean air = card == null || card == Blocks.air; // what new Chunk(world, blocks, metas, x, z) skips
             Block made = ch.getBlock(bx, by, bz);
-            boolean ok = air ? made == Blocks.air
-                : made == card && ch.getBlockMetadata(bx, by, bz) == (metas[i] & 15);
+            boolean ok = air ? made == Blocks.air : made == card && ch.getBlockMetadata(bx, by, bz) == (metas[i] & 15);
             if (!ok) {
                 if (wholeMismatched++ < 10) PhiWorldgen.LOG.warn(
                     "phiwg card check: chunk {},{} block x{} z{} y{}: card {}:{}, vanilla {}:{}",

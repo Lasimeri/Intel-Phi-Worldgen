@@ -25,6 +25,7 @@
 #include "cdma.h"
 #include "carve.h"
 #include "genlayer.h"
+#include "rwg.h"
 #include "shape.h"
 #include "vshape.h"
 
@@ -36,7 +37,9 @@ enum { RQ_URGENT = 1, RQ_CARD_BIOMES = 2, RQ_WHOLE = 4 };
 /* answer flags, the payload's first u32: 1 the 16 x 16 biome slots follow (u16[256]); 2 the whole chunk: then u16 n, n
  * end states (u16 slot, u16 top, u16 filler, u8 meta, u8 0), and per column (x << 4 | z) from y 0 runs of u16 id,
  * u8 meta, u8 length - 1; without 2, the shape's column runs (lib/shape.h) */
-enum { AN_BI16 = 1, AN_WHOLE = 2 };
+enum { AN_BI16 = 1, AN_WHOLE = 2, AN_RWGH = 4 };
+/* AN_RWGH (an RWG world, docs/rwg-capture-format.md): RWG's height stage as lib/rwg.h's rwg_heights, f32 height[256],
+ * i16 biome[256], f32 river[256], f32 mapgen[258]; the server fills, paints and carves */
 
 /* One world state: the shape generators, and the GenLayer chains when the capture has them. */
 typedef struct {
@@ -44,6 +47,7 @@ typedef struct {
     gl_world g;
     surf_world s;
     carve_world k;
+    rwg_world *r; /* an RWG world (magic RWGW): the rest unused */
 } wstate;
 
 /* docs/shm-protocol.md */
@@ -261,6 +265,7 @@ static void *worker(void *arg)
     static __thread uint16_t blocks[65536];
     static __thread uint16_t shape[65536];
     static __thread uint8_t metas[65536];
+    rwg_scratch *rwgs = NULL; /* allocated on this worker's first RWG chunk */
     /* this worker's own VPU instruction counter (user mode); -1 when the kernel has none */
     struct perf_event_attr pa;
     memset(&pa, 0, sizeof pa);
@@ -291,7 +296,24 @@ static void *worker(void *arg)
         /* the payload after the 64-byte header: flags, the 16 x 16 biome slots when the layers are here, the runs */
         uint8_t *pay = st->virt + 64;
         uint32_t aflags = 0, off = 4;
+        uint32_t len = 0;
         uint16_t b16[256];
+        if (r.ws->r) {
+            if (!rwgs && !(rwgs = malloc(sizeof *rwgs))) {
+                say("worker %ld: no memory for the RWG scratch", (long)arg);
+                continue;
+            }
+            rwg_heights hgt;
+            rwg_new_noise(r.ws->r, rwgs, r.cx * 16, r.cz * 16, &hgt);
+            aflags = AN_RWGH;
+            memcpy(pay, &aflags, 4);
+            memcpy(pay + 4, hgt.height, sizeof hgt.height);
+            memcpy(pay + 4 + 1024, hgt.biome, sizeof hgt.biome);
+            memcpy(pay + 4 + 1536, hgt.river, sizeof hgt.river);
+            memcpy(pay + 4 + 2560, hgt.mapgen, sizeof hgt.mapgen);
+            len = 4 + 2560 + 1032;
+            goto deliver;
+        }
         if (g->have) {
             if (r.flags & RQ_CARD_BIOMES) {
                 gl_slots10(g, &arena, r.cx, r.cz, r.bi10);
@@ -312,7 +334,6 @@ static void *worker(void *arg)
             shape_combine(w, r.bi10, o0, o1, o2, o3, field);
             shape_interp(field, blocks);
         }
-        uint32_t len = 0;
         if ((r.flags & RQ_WHOLE) && g->have && r.ws->s.have && r.ws->k.have) {
             /* the surface, then the carvers on its end states; the shape kept for the fallback */
             memcpy(shape, blocks, sizeof shape);
@@ -334,6 +355,7 @@ static void *worker(void *arg)
             if (!len) memcpy(blocks, shape, sizeof shape); /* Mesa or too long: the shape alone */
         }
         if (!len) len = off + (uint32_t)shape_rle(blocks, pay + off);
+    deliver:;
         uint32_t us = (uint32_t)((now() - t0) * 1e6);
         __atomic_add_fetch(&computed_us, us, __ATOMIC_RELAXED);
         __atomic_add_fetch(&st_compute_ns, (uint64_t)us * 1000, __ATOMIC_RELAXED);
@@ -361,12 +383,18 @@ static void *worker(void *arg)
     return NULL;
 }
 
-/* A world state from a blob (taken over), or NULL. */
+/* A world state from a blob (taken over), or NULL: PWGW for 1.7.10's generator, RWGW for RWG's. */
 static wstate *load_world(uint8_t *blob, size_t len)
 {
     capfile f;
     wstate *w = calloc(1, sizeof *w);
-    if (!w || cap_wrap(&f, blob, len, "PWGW") || world_load(&w->w, &f, "world state") ||
+    if (!w) return NULL;
+    if (len >= 4 && !memcmp(blob, "RWGW", 4)) {
+        if (cap_wrap(&f, blob, len, "RWGW") || !(w->r = malloc(sizeof *w->r)) || rwg_load(w->r, &f, "RWG world state"))
+            return NULL;
+        return w;
+    }
+    if (cap_wrap(&f, blob, len, "PWGW") || world_load(&w->w, &f, "world state") ||
         gl_load(&w->g, &f, "world state") || surf_load(&w->s, &f, "world state") || carve_load(&w->k, &f, "world state"))
         return NULL;
     return w; /* never freed: a worker may still hold the pointer from a request of an earlier session */
@@ -465,7 +493,8 @@ static void *shm_main(void *arg)
             fence();
             hw64(S_CSESSION, s);
             session = s;
-            say("session %llu: world state %u bytes, octaves %d %d %d %d, amplified %d, biome layers %s",
+            if (w->r) say("session %llu: RWG world state %u bytes, %d realistic biomes", (unsigned long long)s, len, w->r->nbiomes);
+            else say("session %llu: world state %u bytes, octaves %d %d %d %d, amplified %d, biome layers %s",
                 (unsigned long long)s, len, w->w.gen[0].n, w->w.gen[1].n, w->w.gen[2].n, w->w.gen[3].n, w->w.amplified,
                 w->g.have ? "on the card" : "from the server");
         }
@@ -521,7 +550,8 @@ static void serve(int fd)
     memcpy(ready + 8, &workers, 4);
     write_full(fd, ready, 12);
     pthread_mutex_unlock(&wm);
-    say("tcp: connected: world state %u bytes, octaves %d %d %d %d, amplified %d, biome layers %s", len,
+    if (w->r) say("tcp: connected: RWG world state %u bytes, %d realistic biomes", len, w->r->nbiomes);
+    else say("tcp: connected: world state %u bytes, octaves %d %d %d %d, amplified %d, biome layers %s", len,
         w->w.gen[0].n, w->w.gen[1].n, w->w.gen[2].n, w->w.gen[3].n, w->w.amplified, w->g.have ? "on the card" : "from the server");
 
     long requests = 0;

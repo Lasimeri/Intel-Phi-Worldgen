@@ -18,7 +18,7 @@ SYS="${PHI_SYSROOT_7120A:-$HOME/.cache/intel-phi-7120a-build/toolchain/sysroot}"
 "$VCC" --target=x86_64-unknown-linux-musl -march=knc -fPIE -c -o "$out/kncgather.o" "$lib/kncgather.S"
 # shellcheck disable=SC1091
 . "${PHI_TREE:-$HOME/Intel Phi 7120A}/toolchain/env.sh"
-knc-cc "${flags[@]}" -static -o "$out/pwgd-card-new" "$here/pwgd.c" "$lib/shape.c" "$lib/capfile.c" "$lib/cdma.c" "$lib/genlayer.c" \
+knc-cc "${flags[@]}" -static -o "$out/pwgd-card-new" "$here/pwgd.c" "$lib/shape.c" "$lib/capfile.c" "$lib/cdma.c" "$lib/genlayer.c" "$lib/rwg.c" \
     "$lib/surface.c" "$lib/carve.c" \
     "$out/vshape.o" "$out/kncgather.o" -lpthread
 "${PHI_TREE:-$HOME/Intel Phi 7120A}/host/target/debug/phi-isa-audit" "$out/pwgd-card-new" | tail -1

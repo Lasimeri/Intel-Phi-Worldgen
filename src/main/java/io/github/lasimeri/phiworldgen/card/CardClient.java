@@ -42,10 +42,14 @@ public final class CardClient {
     /** docs/shm-protocol.md: requests and answers of version 2. */
     public static final int PROTOCOL = 3;
     public final int workers;
-    /** The world state holds the GenLayer chains (LAYR): the card computes every chunk's biomes from its coordinates. */
+    /**
+     * The world state holds the GenLayer chains (LAYR): the card computes every chunk's biomes from its coordinates.
+     */
     public volatile boolean cardBiomes;
-    /** The card makes whole chunks (surface, caves, ravines): the tables are in the world state and no mod hooks
-     * ReplaceBiomeBlocks. */
+    /**
+     * The card makes whole chunks (surface, caves, ravines): the tables are in the world state and no mod hooks
+     * ReplaceBiomeBlocks.
+     */
     public volatile boolean cardWhole;
     /** The generator whose state the card was given: the only one it may serve. */
     public final Object provider;
@@ -79,8 +83,8 @@ public final class CardClient {
         if (!transport.equals("tcp")) {
             try {
                 CardClient c = ShmLink.connect(shmFile, shmOffset, world, provider);
-                c.cardBiomes = Capture.hasSection(world, "LAYR");
-                c.cardWhole = wholeOk(world);
+                c.cardBiomes = rwg(world) || Capture.hasSection(world, "LAYR");
+                c.cardWhole = !rwg(world) && wholeOk(world);
                 return c;
             } catch (IOException e) {
                 if (transport.equals("shm")) throw e;
@@ -88,17 +92,24 @@ public final class CardClient {
             }
         }
         CardClient c = TcpLink.connect(host, port, world, provider);
-        c.cardBiomes = Capture.hasSection(world, "LAYR");
-        c.cardWhole = wholeOk(world);
+        c.cardBiomes = rwg(world) || Capture.hasSection(world, "LAYR");
+        c.cardWhole = !rwg(world) && wholeOk(world);
         if (shmFailure != null)
             PhiWorldgen.LOG.info("phiwg card: shared region not used ({}); TCP instead", shmFailure.getMessage());
         return c;
     }
 
+    /** An RWG world state (capture/RwgCapture): the card answers RWG's height stage; no biomes are computed here. */
+    static boolean rwg(byte[] world) {
+        return world.length >= 4 && world[0] == 'R' && world[1] == 'W' && world[2] == 'G' && world[3] == 'W';
+    }
+
     /** Whole chunks need the layer, surface and carver tables, and no ReplaceBiomeBlocks listener anywhere. */
     static boolean wholeOk(byte[] world) {
-        return Capture.hasSection(world, "LAYR") && Capture.hasSection(world, "SURB") && Capture.hasSection(world, "SNOI")
-            && Capture.hasSection(world, "CARV") && !surfaceHooked();
+        return Capture.hasSection(world, "LAYR") && Capture.hasSection(world, "SURB")
+            && Capture.hasSection(world, "SNOI")
+            && Capture.hasSection(world, "CARV")
+            && !surfaceHooked();
     }
 
     /** Whether any handler listens to ChunkProviderEvent.ReplaceBiomeBlocks (or a parent event) on Forge's bus. */
@@ -108,7 +119,13 @@ public final class CardClient {
             f.setAccessible(true);
             int id = f.getInt(net.minecraftforge.common.MinecraftForge.EVENT_BUS);
             net.minecraftforge.event.terraingen.ChunkProviderEvent.ReplaceBiomeBlocks e = new net.minecraftforge.event.terraingen.ChunkProviderEvent.ReplaceBiomeBlocks(
-                null, 0, 0, null, null, null, null);
+                null,
+                0,
+                0,
+                null,
+                null,
+                null,
+                null);
             for (cpw.mods.fml.common.eventhandler.IEventListener l : e.getListenerList()
                 .getListeners(id)) if (!(l instanceof cpw.mods.fml.common.eventhandler.EventPriority)) return true;
             return false;
