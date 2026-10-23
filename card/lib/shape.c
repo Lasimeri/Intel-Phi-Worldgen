@@ -1,6 +1,8 @@
 /* shape.c: 1.7.10's terrain shape in C, operation for operation as the decompiled Java. See shape.md. */
 #include "shape.h"
 
+#include "fbits.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -241,7 +243,10 @@ void shape_interp(const double field[825], uint16_t blocks[65536])
                         double d15 = d10 - d16;
                         for (int k3 = 0; k3 < 4; ++k3) {
                             j3 += 256;
-                            if ((d15 += d16) > 0.0) blocks[j3] = BLOCK_STONE;
+                            /* (d15 += d16) > 0.0 by fbits.h. The field is finite; a NaN in it would be the x87's
+                             * indefinite, which is negative, so d_gt0 says no as the float compare does */
+                            d15 += d16;
+                            if (d_gt0(d15)) blocks[j3] = BLOCK_STONE;
                             else if (k2 * 8 + l2 < sea) blocks[j3] = BLOCK_WATER;
                             else blocks[j3] = BLOCK_NULL;
                         }
